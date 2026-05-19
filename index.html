@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Multiplayer Memory Card Game</title>
+    <!-- Trystero (serverless WebRTC) with MQTT strategy -->
     <script src="https://cdn.jsdelivr.net/npm/trystero@0.20.0/dist/trystero.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -417,10 +418,15 @@
                     urls: 'turn:openrelay.metered.ca:80',
                     username: 'openrelayproject',
                     credential: 'openrelayproject'
+                },
+                {
+                    urls: 'turn:freeturn.net:3478',
+                    username: 'free',
+                    credential: 'free'
                 }
             ]
         };
-        const CONNECTION_TIMEOUT_MS = 20000;
+        const CONNECTION_TIMEOUT_MS = 30000; // 30 seconds
 
         let connectionTimer = null;
         let connectionTimeoutHandle = null;
@@ -430,9 +436,9 @@
         const SUIT_COLORS = ['red','red','black','black'];
 
         let room = null;
-        // Mapping: clientId -> { name, score, trysteroPeerId }
+        // Map: clientId -> { name, score, trysteroPeerId }
         let connectedPeers = {};
-        let myClientId = null;       // unique ID for this local player
+        let myClientId = null;
         let isHost = false;
         let gameStarted = false;
         let players = [];            // game players list (ordered)
@@ -563,9 +569,10 @@
             return 'game-' + Math.random().toString(36).substring(2, 8);
         }
 
+        // ======== MAIN CONNECTION WITH MQTT ========
         function createRoom() {
             isHost = true;
-            myClientId = 'host-' + Date.now(); // host's clientId
+            myClientId = 'host-' + Date.now();
             document.getElementById('mainMenu').style.display = 'none';
             document.getElementById('hostWaitingRoom').style.display = 'block';
 
@@ -599,25 +606,24 @@
                 }).catch(() => showToast('❌ Copy failed.', 'error-toast'));
             };
 
-            // Join the room as host
-            room = trystero.joinRoom({ appId: 'memory-card-game-v1', rtcConfig: RTC_CONFIG }, roomName);
+            // Use MQTT strategy for reliable signalling
+            room = trystero.joinRoom(
+                { appId: 'memory-card-game-v1', rtcConfig: RTC_CONFIG, strategy: 'mqtt' },
+                roomName
+            );
 
             room.onPeerJoin((trysteroPeerId) => {
-                // A guest joined – we'll wait for their setName message
-                // Do nothing here; we'll process onPeerData
                 updateHostPlayersList();
             });
 
             room.onPeerLeave((trysteroPeerId) => {
-                // Find the clientId that matches this trysteroPeerId
-                const clientId = Object.keys(connectedPeers).find(id => connectedPeers[id].trysteroPeerId === trysteroPeerId);
+                const clientId = Object.keys(connectedPeers).find(
+                    id => connectedPeers[id].trysteroPeerId === trysteroPeerId
+                );
                 if (clientId) {
                     delete connectedPeers[clientId];
-                    if (gameStarted) {
-                        handlePlayerLeave(clientId);
-                    } else {
-                        broadcastPlayersUpdate();
-                    }
+                    if (gameStarted) handlePlayerLeave(clientId);
+                    else broadcastPlayersUpdate();
                 }
                 updateHostPlayersList();
             });
@@ -633,7 +639,7 @@
                         handleFlipCard(data.clientId, data.cardIndex);
                     } else if (data.type === 'chatMessage') {
                         if (chatAllowed) {
-                            room.send(data); // broadcast to all (including sender)
+                            room.send(data);
                             addChatToast(data.name, data.text);
                         }
                     } else if (data.type === 'leaveGame') {
@@ -666,9 +672,7 @@
             let remaining = Math.ceil(CONNECTION_TIMEOUT_MS / 1000);
             connectionTimer = setInterval(() => {
                 remaining--;
-                if (remaining > 0) {
-                    statusEl.innerHTML = `🟡 Joining room... (${remaining}s)`;
-                }
+                if (remaining > 0) statusEl.innerHTML = `🟡 Joining room... (${remaining}s)`;
             }, 1000);
 
             connectionTimeoutHandle = setTimeout(() => {
@@ -680,16 +684,16 @@
                 }
             }, CONNECTION_TIMEOUT_MS);
 
-            room = trystero.joinRoom({ appId: 'memory-card-game-v1', rtcConfig: RTC_CONFIG }, roomName);
+            room = trystero.joinRoom(
+                { appId: 'memory-card-game-v1', rtcConfig: RTC_CONFIG, strategy: 'mqtt' },
+                roomName
+            );
 
-            // When the host joins (or we detect a peer), we send our info
             room.onPeerJoin((trysteroPeerId) => {
                 clearTimeout(connectionTimeoutHandle);
                 clearInterval(connectionTimer);
                 statusEl.innerHTML = '✅ Connected! Waiting for host to start...';
-                // Send setName to the host
                 room.send({ type: 'setName', name: guestName, clientId: myClientId });
-                // Also listen for data (already set up below)
             });
 
             room.onPeerData((data, trysteroPeerId) => {
@@ -703,18 +707,16 @@
             });
 
             room.onPeerLeave((trysteroPeerId) => {
-                if (gameStarted) {
-                    showToast('A player left.', 'error-toast');
-                }
+                if (gameStarted) showToast('A player left.', 'error-toast');
             });
         }
+        // ===========================================
 
         function handleData(data, trysteroPeerId) {
             if (data.type === 'playersUpdate') {
-                // Update connectedPeers from host's broadcast
                 connectedPeers = {};
                 data.players.forEach(p => {
-                    connectedPeers[p.clientId] = { name: p.name, score: p.score, trysteroPeerId: null }; // host doesn't include trysteroPeerId
+                    connectedPeers[p.clientId] = { name: p.name, score: p.score, trysteroPeerId: null };
                 });
                 if (!gameStarted) updateGuestPlayersList();
             } else if (data.type === 'initGame') {
@@ -799,7 +801,7 @@
             if (!isHost || gameStarted) return;
             const peerInfo = connectedPeers[clientId];
             if (peerInfo && peerInfo.trysteroPeerId) {
-                room.send({ type: 'kick' }, peerInfo.trysteroPeerId); // send only to that peer
+                room.send({ type: 'kick' }, peerInfo.trysteroPeerId);
             }
             delete connectedPeers[clientId];
             broadcastPlayersUpdate();
@@ -825,7 +827,6 @@
         }
 
         function startGameFromSettings() {
-            // Build players list: host first, then all connected peers
             players = [{ clientId: myClientId, name: document.getElementById('hostNameSetting').value.trim() || 'Host', score: 0 }];
             Object.keys(connectedPeers).forEach(clientId => {
                 players.push({ clientId, name: connectedPeers[clientId].name, score: 0 });
@@ -1222,7 +1223,6 @@
             const list = document.getElementById('guestPlayersList');
             list.innerHTML = '<strong>Players:</strong>';
             if (!gameStarted) {
-                // Show from connectedPeers
                 list.innerHTML += '<div>👤 Host</div>';
                 Object.values(connectedPeers).forEach(info => {
                     list.innerHTML += `<div>👤 ${info.name}</div>`;
