@@ -867,40 +867,266 @@
         let onlineLastTurnIndex = null, onlineContinueOnMatch = true, onlineTurnTimeLimit = 15;
         let chatAllowed = true, showScoresOnline = true, voiceChatAllowed = false;
 
-        // ---- Firebase Integration (Zero-Latency Local Express Backend Mock) ----
+        // ---- Firebase Integration (Zero-Latency Local PeerJS WebRTC P2P Sync Layer Mock) ----
+        let peerInstance = null;
+        let localMasterState = null;
+        let snapshotCallbacks = [];
+
+        // Define dummy voice functions to prevent ReferenceErrors if called
+        const startVoiceChat = () => {};
+        const stopVoiceChat = () => {};
+
+        // Helper to perform nested object updates and list operations
+        function deepSetAndMerge(target, updates) {
+            if (!target) return;
+            for (const key in updates) {
+                const val = updates[key];
+                
+                if (key.includes('.')) {
+                    const parts = key.split('.');
+                    let current = target;
+                    for (let i = 0; i < parts.length - 1; i++) {
+                        const part = parts[i];
+                        if (!current[part] || typeof current[part] !== 'object') {
+                            current[part] = {};
+                        }
+                        current = current[part];
+                    }
+                    const lastPart = parts[parts.length - 1];
+                    setSingleValue(current, lastPart, val);
+                } else {
+                    setSingleValue(target, key, val);
+                }
+            }
+        }
+
+        function setSingleValue(parent, key, val) {
+            if (val && typeof val === 'object' && val.__type === 'arrayUnion') {
+                if (!Array.isArray(parent[key])) {
+                    parent[key] = [];
+                }
+                const currentArray = parent[key];
+                const itemToUnion = val.value;
+                
+                const alreadyExists = currentArray.some((x) => {
+                    if (typeof x === 'object' && x && itemToUnion && typeof itemToUnion === 'object') {
+                        const xId = x.peerId || x.id;
+                        const uId = itemToUnion.peerId || itemToUnion.id;
+                        if (xId !== undefined && uId !== undefined) {
+                            return xId === uId;
+                        }
+                        return JSON.stringify(x) === JSON.stringify(itemToUnion);
+                    }
+                    return x === itemToUnion;
+                });
+                
+                if (!alreadyExists) {
+                    currentArray.push(itemToUnion);
+                }
+            } else if (val && typeof val === 'object' && !Array.isArray(val)) {
+                if (!parent[key] || typeof parent[key] !== 'object' || Array.isArray(parent[key])) {
+                    parent[key] = {};
+                }
+                deepSetAndMerge(parent[key], val);
+            } else {
+                parent[key] = val;
+            }
+        }
+
+        function setupHostConnection(conn) {
+            connections.push(conn);
+            
+            conn.on('open', () => {
+                console.log("P2P Serverless Channel connected to guest:", conn.peer);
+                conn.send({ type: 'STATE_UPDATE', data: localMasterState });
+            });
+
+            conn.on('data', (msg) => {
+                if (!msg) return;
+                if (msg.type === 'UPDATE_REQUEST') {
+                    deepSetAndMerge(localMasterState, msg.data);
+                    broadcastStateToAllGuests();
+                    triggerLocalStateChange();
+                } else if (msg.type === 'GET_REQUEST') {
+                    conn.send({ type: 'STATE_UPDATE', data: localMasterState });
+                } else if (msg.type === 'REGISTER_PLAYER_ID') {
+                    conn.gamePeerId = msg.peerId;
+                }
+            });
+
+            conn.on('close', () => {
+                console.log("P2P Guest connection closed:", conn.peer);
+                connections = connections.filter(c => c !== conn);
+                if (conn.gamePeerId) {
+                    handlePlayerLeave(conn.gamePeerId);
+                }
+            });
+
+            conn.on('error', (err) => {
+                console.error("P2P Host connection error:", err);
+            });
+        }
+
+        function setupGuestConnection(conn) {
+            conn.on('open', () => {
+                console.log("P2P Serverless Channel connected to Host!");
+                conn.send({ type: 'REGISTER_PLAYER_ID', peerId: myPeerId });
+            });
+
+            conn.on('data', (msg) => {
+                if (!msg) return;
+                if (msg.type === 'STATE_UPDATE') {
+                    localMasterState = msg.data;
+                    triggerLocalStateChange();
+                } else if (msg.type === 'HOST_CLOSED') {
+                    console.log("P2P Host closed lobby.");
+                    snapshotCallbacks.forEach(cb => {
+                        try { cb({ exists: false, data: () => null }); } catch(err) {}
+                    });
+                }
+            });
+
+            conn.on('close', () => {
+                console.log("P2P Host connection lost.");
+                snapshotCallbacks.forEach(cb => {
+                    try { cb({ exists: false, data: () => null }); } catch(err) {}
+                });
+            });
+
+            conn.on('error', (err) => {
+                console.error("P2P Guest connection error:", err);
+            });
+        }
+
+        function broadcastStateToAllGuests() {
+            connections.forEach(conn => {
+                if (conn && conn.open) {
+                    conn.send({ type: 'STATE_UPDATE', data: localMasterState });
+                }
+            });
+        }
+
+        function sendToHost(msg) {
+            const conn = connections.find(c => c && c.open);
+            if (conn) {
+                conn.send(msg);
+            } else {
+                console.warn("No active P2P channel to Host.");
+            }
+        }
+
+        function triggerLocalStateChange() {
+            if (localMasterState) {
+                snapshotCallbacks.forEach(cb => {
+                    try { cb({ exists: true, data: () => localMasterState }); } catch(err) {}
+                });
+            }
+        }
+
         class MockDocument {
             constructor(roomCode) {
                 this.roomCode = roomCode;
-                this.snapshotCallbacks = [];
-                this.intervalId = null;
-                this.lastFetchedJson = null;
             }
 
             async set(data) {
-                const res = await fetch(`/api/rooms/${this.roomCode}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(data)
-                });
-                if (!res.ok) {
-                    const errText = await res.text();
-                    throw new Error(errText || 'Failed to set room data');
+                if (isHost) {
+                    localMasterState = data;
+                    
+                    // Create peer connection endpoint for guests to join
+                    if (peerInstance) {
+                        try { peerInstance.destroy(); } catch (e) {}
+                    }
+                    
+                    peerInstance = new Peer('mg-' + this.roomCode, { debug: 1 });
+                    peer = peerInstance; // Keep old global variable reference
+                    connections = [];
+
+                    peerInstance.on('open', (id) => {
+                        console.log("P2P Host Broker opened successfully on room:", id);
+                        triggerLocalStateChange();
+                    });
+
+                    peerInstance.on('connection', (conn) => {
+                        setupHostConnection(conn);
+                    });
+
+                    peerInstance.on('error', (err) => {
+                        console.error("P2P Broker Broker initialization error:", err);
+                    });
+
+                    return data;
+                } else {
+                    sendToHost({ type: 'UPDATE_REQUEST', data: data });
+                    return data;
                 }
-                const savedData = await res.json();
-                return savedData;
             }
 
             async get() {
-                const res = await fetch(`/api/rooms/${this.roomCode}`);
-                if (res.status === 404) {
-                    return { exists: false, data: () => null };
+                if (isHost) {
+                    return { exists: !!localMasterState, data: () => localMasterState };
+                } else {
+                    return new Promise((resolve) => {
+                        let resolved = false;
+                        
+                        const openConnection = connections.find(c => c && c.open);
+                        if (openConnection) {
+                            openConnection.send({ type: 'GET_REQUEST' });
+                            
+                            const handleMsg = (msg) => {
+                                if (msg && msg.type === 'STATE_UPDATE') {
+                                    resolved = true;
+                                    openConnection.off('data', handleMsg);
+                                    resolve({ exists: true, data: () => msg.data });
+                                }
+                            };
+                            openConnection.on('data', handleMsg);
+                            
+                            setTimeout(() => {
+                                if (!resolved) {
+                                    openConnection.off('data', handleMsg);
+                                    resolve({ exists: false, data: () => null });
+                                }
+                            }, 4000);
+                            return;
+                        }
+
+                        // Create a temporary peer agent to evaluate if host exists
+                        const tempPeer = new Peer({ debug: 1 });
+                        const timeout = setTimeout(() => {
+                            if (!resolved) {
+                                resolved = true;
+                                tempPeer.destroy();
+                                resolve({ exists: false, data: () => null });
+                            }
+                        }, 4000);
+
+                        tempPeer.on('open', () => {
+                            const conn = tempPeer.connect('mg-' + this.roomCode, { reliable: true });
+                            conn.on('open', () => {
+                                conn.send({ type: 'GET_REQUEST' });
+                            });
+                            conn.on('data', (msg) => {
+                                if (msg && msg.type === 'STATE_UPDATE') {
+                                    if (!resolved) {
+                                        resolved = true;
+                                        clearTimeout(timeout);
+                                        tempPeer.destroy();
+                                        resolve({ exists: true, data: () => msg.data });
+                                    }
+                                }
+                            });
+                        });
+
+                        tempPeer.on('error', () => {
+                            if (!resolved) {
+                                resolved = true;
+                                clearTimeout(timeout);
+                                tempPeer.destroy();
+                                resolve({ exists: false, data: () => null });
+                            }
+                        });
+                    });
                 }
-                if (!res.ok) {
-                    const errText = await res.text();
-                    throw new Error(errText || 'Failed to get room data');
-                }
-                const data = await res.json();
-                return { exists: true, data: () => data };
             }
 
             async update(data) {
@@ -916,67 +1142,38 @@
                     }
                 }
 
-                const res = await fetch(`/api/rooms/${this.roomCode}`, {
-                    method: 'PATCH',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(processed)
-                });
-                if (!res.ok) {
-                    const errText = await res.text();
-                    throw new Error(errText || 'Failed to update room data');
+                if (isHost) {
+                    deepSetAndMerge(localMasterState, processed);
+                    broadcastStateToAllGuests();
+                    triggerLocalStateChange();
+                } else {
+                    sendToHost({ type: 'UPDATE_REQUEST', data: processed });
                 }
-                const updated = await res.json();
-                return updated;
             }
 
             async delete() {
-                const res = await fetch(`/api/rooms/${this.roomCode}`, {
-                    method: 'DELETE'
-                });
-                if (!res.ok) {
-                    const errText = await res.text();
-                    throw new Error(errText || 'Failed to delete room');
+                if (isHost) {
+                    localMasterState = null;
+                    connections.forEach(c => {
+                        try { c.send({ type: 'HOST_CLOSED' }); c.close(); } catch(e) {}
+                    });
+                    connections = [];
+                    if (peerInstance) {
+                        try { peerInstance.destroy(); } catch(e) {}
+                        peerInstance = null;
+                        peer = null;
+                    }
+                    snapshotCallbacks = [];
                 }
             }
 
             onSnapshot(onNext, onError) {
-                this.snapshotCallbacks.push(onNext);
-                
-                let isUnsubscribed = false;
-                const poll = async () => {
-                    if (isUnsubscribed) return;
-                    try {
-                        const res = await fetch(`/api/rooms/${this.roomCode}`);
-                        if (isUnsubscribed) return;
-                        if (res.status === 404) {
-                            onNext({ exists: false, data: () => null });
-                            return;
-                        }
-                        if (!res.ok) return;
-                        const data = await res.json();
-                        if (isUnsubscribed) return;
-                        
-                        const dataString = JSON.stringify(data);
-                        if (dataString !== this.lastFetchedJson) {
-                            this.lastFetchedJson = dataString;
-                            onNext({
-                                exists: true,
-                                data: () => data
-                            });
-                        }
-                    } catch (err) {
-                        if (onError && !isUnsubscribed) onError(err);
-                    }
-                };
-
-                poll();
-                // Speed-up game interval to 1.0s for snappy responsiveness in memory game actions
-                this.intervalId = setInterval(poll, 1000);
-
+                snapshotCallbacks.push(onNext);
+                if (isHost && localMasterState) {
+                    setTimeout(() => onNext({ exists: true, data: () => localMasterState }), 0);
+                }
                 return () => {
-                    isUnsubscribed = true;
-                    clearInterval(this.intervalId);
-                    this.snapshotCallbacks = this.snapshotCallbacks.filter(c => c !== onNext);
+                    snapshotCallbacks = snapshotCallbacks.filter(c => c !== onNext);
                 };
             }
         }
@@ -1031,12 +1228,15 @@
         let myLastProcessedChatTime = 0;
         let isFirebaseInitialized = false;
 
+        let peer = null;
+        let connections = [];
+
         async function initFirebase() {
             if (isFirebaseInitialized) return;
             try {
                 db = firebase.firestore();
                 isFirebaseInitialized = true;
-                console.log("Local Mock Firestore initialized successfully");
+                console.log("P2P Firestore driver initialized successfully");
                 
                 // Parse pre-filled join link if waiting
                 const urlParams = new URLSearchParams(window.location.search);
@@ -1220,13 +1420,35 @@
                         return;
                     }
 
-                    db.collection('rooms').doc(pin).update({
-                        players: firebase.firestore.FieldValue.arrayUnion({ peerId: myPeerId, name: guestName, score: 0 })
-                    }).then(() => {
-                        subscribeToRoom(pin);
-                    }).catch(err => {
-                        console.error("Firestore register error:", err);
-                        document.getElementById('guestWaitingStatus').innerHTML = '❌ Failed to join lobby: ' + err.message;
+                    // Setup the actual long-lived guest connection
+                    if (peerInstance) {
+                        try { peerInstance.destroy(); } catch(e) {}
+                    }
+                    peerInstance = new Peer({ debug: 1 });
+                    peer = peerInstance;
+                    connections = [];
+
+                    peerInstance.on('open', (id) => {
+                        console.log("P2P Guest channel initialized with broker ID:", id);
+                        const conn = peerInstance.connect('mg-' + pin, { reliable: true });
+                        connections = [conn];
+                        setupGuestConnection(conn);
+
+                        conn.on('open', () => {
+                            db.collection('rooms').doc(pin).update({
+                                players: firebase.firestore.FieldValue.arrayUnion({ peerId: myPeerId, name: guestName, score: 0 })
+                            }).then(() => {
+                                subscribeToRoom(pin);
+                            }).catch(err => {
+                                console.error("Firestore register error:", err);
+                                document.getElementById('guestWaitingStatus').innerHTML = '❌ Failed to join lobby: ' + err.message;
+                                setTimeout(() => resetToMainMenu(), 5500);
+                            });
+                        });
+                    });
+
+                    peerInstance.on('error', (err) => {
+                        document.getElementById('guestWaitingStatus').innerHTML = '❌ Connection failed: ' + err.message;
                         setTimeout(() => resetToMainMenu(), 5500);
                     });
                 }).catch(err => {
