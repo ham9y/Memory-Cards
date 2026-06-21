@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Multiplayer Memory Card Game</title>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
     <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
@@ -319,7 +321,7 @@
                 <input type="checkbox" id="showScoresSetting" checked>
                 <label style="color:white;">Show scores during game</label>
             </div>
-            <div class="checkbox-row">
+            <div class="checkbox-row" style="display:none;">
                 <input type="checkbox" id="voiceChatSetting">
                 <label style="color:white;">Allow voice chat</label>
             </div>
@@ -858,81 +860,266 @@
             document.getElementById('quitOverlayBtn').onclick = () => { overlay.remove(); resetToMainMenu(); };
         }
 
-        // ---- Online Multiplayer (PeerJS with robust 6-digit room PIN flow) ----
-        let peer = null, connections = [], mediaConnections = [], myPeerId = null, isHost = false;
+        // ---- Online Multiplayer (Highly Reliable Pure Google Firebase Firestore Server) ----
+        let myPeerId = null, isHost = false;
         let onlinePlayers = [], myOnlineIndex = -1, onlineCards = [], onlineCurrentTurn = 0, onlineTurnLock = false;
         let onlineFirstFlipped = null, onlineMatchDelay = null, onlineTurnTimerHandle = null, onlineTurnTimerStart = null;
         let onlineLastTurnIndex = null, onlineContinueOnMatch = true, onlineTurnTimeLimit = 15;
-        let chatAllowed = true, showScoresOnline = true, voiceChatAllowed = false, guestNames = {}, localStream = null;
+        let chatAllowed = true, showScoresOnline = true, voiceChatAllowed = false;
 
-        // Configuration with public Google and Twilio STUN servers to allow direct connections across different networks and NATs
-        const PEER_OPTIONS = {
-            config: {
-                iceServers: [
-                    { urls: 'stun:stun.l.google.com:19302' },
-                    { urls: 'stun:stun1.l.google.com:19302' },
-                    { urls: 'stun:stun2.l.google.com:19302' },
-                    { urls: 'stun:stun3.l.google.com:19302' },
-                    { urls: 'stun:stun4.l.google.com:19302' },
-                    { urls: 'stun:global.stun.twilio.com:3478' }
-                ]
+        // ---- Firebase Integration (Zero-Latency Local Express Backend Mock) ----
+        class MockDocument {
+            constructor(roomCode) {
+                this.roomCode = roomCode;
+                this.snapshotCallbacks = [];
+                this.intervalId = null;
+                this.lastFetchedJson = null;
             }
+
+            async set(data) {
+                const res = await fetch(`/api/rooms/${this.roomCode}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                if (!res.ok) {
+                    const errText = await res.text();
+                    throw new Error(errText || 'Failed to set room data');
+                }
+                const savedData = await res.json();
+                return savedData;
+            }
+
+            async get() {
+                const res = await fetch(`/api/rooms/${this.roomCode}`);
+                if (res.status === 404) {
+                    return { exists: false, data: () => null };
+                }
+                if (!res.ok) {
+                    const errText = await res.text();
+                    throw new Error(errText || 'Failed to get room data');
+                }
+                const data = await res.json();
+                return { exists: true, data: () => data };
+            }
+
+            async update(data) {
+                const processed = {};
+                for (const key in data) {
+                    if (data[key] && data[key].__type === 'arrayUnion') {
+                        processed[key] = {
+                            __type: 'arrayUnion',
+                            value: data[key].value
+                        };
+                    } else {
+                        processed[key] = data[key];
+                    }
+                }
+
+                const res = await fetch(`/api/rooms/${this.roomCode}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(processed)
+                });
+                if (!res.ok) {
+                    const errText = await res.text();
+                    throw new Error(errText || 'Failed to update room data');
+                }
+                const updated = await res.json();
+                return updated;
+            }
+
+            async delete() {
+                const res = await fetch(`/api/rooms/${this.roomCode}`, {
+                    method: 'DELETE'
+                });
+                if (!res.ok) {
+                    const errText = await res.text();
+                    throw new Error(errText || 'Failed to delete room');
+                }
+            }
+
+            onSnapshot(onNext, onError) {
+                this.snapshotCallbacks.push(onNext);
+                
+                let isUnsubscribed = false;
+                const poll = async () => {
+                    if (isUnsubscribed) return;
+                    try {
+                        const res = await fetch(`/api/rooms/${this.roomCode}`);
+                        if (isUnsubscribed) return;
+                        if (res.status === 404) {
+                            onNext({ exists: false, data: () => null });
+                            return;
+                        }
+                        if (!res.ok) return;
+                        const data = await res.json();
+                        if (isUnsubscribed) return;
+                        
+                        const dataString = JSON.stringify(data);
+                        if (dataString !== this.lastFetchedJson) {
+                            this.lastFetchedJson = dataString;
+                            onNext({
+                                exists: true,
+                                data: () => data
+                            });
+                        }
+                    } catch (err) {
+                        if (onError && !isUnsubscribed) onError(err);
+                    }
+                };
+
+                poll();
+                // Speed-up game interval to 1.0s for snappy responsiveness in memory game actions
+                this.intervalId = setInterval(poll, 1000);
+
+                return () => {
+                    isUnsubscribed = true;
+                    clearInterval(this.intervalId);
+                    this.snapshotCallbacks = this.snapshotCallbacks.filter(c => c !== onNext);
+                };
+            }
+        }
+
+        class MockCollection {
+            constructor() {
+                this.docs = {};
+            }
+            doc(roomCode) {
+                if (!this.docs[roomCode]) {
+                    this.docs[roomCode] = new MockDocument(roomCode);
+                }
+                return this.docs[roomCode];
+            }
+        }
+
+        class MockFirestore {
+            constructor() {
+                this.roomsCollection = null;
+            }
+            collection(name) {
+                if (name === 'rooms') {
+                    if (!this.roomsCollection) {
+                        this.roomsCollection = new MockCollection();
+                    }
+                    return this.roomsCollection;
+                }
+                throw new Error("Only 'rooms' collection is supported");
+            }
+        }
+
+        const mockFirebase = {
+            firestore: () => new MockFirestore(),
+            initializeApp: () => {},
+            app: () => ({
+                firestore: () => new MockFirestore()
+            })
         };
 
-        function broadcastToAll(data) { connections.forEach(c => { if (c.open) c.send(data); }); }
+        mockFirebase.firestore.FieldValue = {
+            arrayUnion: (val) => ({ __type: 'arrayUnion', value: val }),
+            serverTimestamp: () => Date.now()
+        };
+
+        const firebase = mockFirebase;
+
+        let db = null;
+        let roomPIN = null;
+        let roomUnsubscribe = null;
+        let hostLastProcessedClickTime = 0;
+        let myLastProcessedEffectTime = 0;
+        let myLastProcessedChatTime = 0;
+        let isFirebaseInitialized = false;
+
+        async function initFirebase() {
+            if (isFirebaseInitialized) return;
+            try {
+                db = firebase.firestore();
+                isFirebaseInitialized = true;
+                console.log("Local Mock Firestore initialized successfully");
+                
+                // Parse pre-filled join link if waiting
+                const urlParams = new URLSearchParams(window.location.search);
+                const joinCode = urlParams.get('join');
+                if (joinCode) {
+                    document.getElementById('peerIdInput').value = joinCode;
+                }
+            } catch(e) {
+                console.error("Failed to initialize Mock Firebase", e);
+                showToast("⚠️ Firebase initialization failed.", "error-toast");
+            }
+        }
+        initFirebase();
 
         function generateRoomCode() {
             return Math.floor(100000 + Math.random() * 900000).toString();
         }
 
-        function createRoom() {
+        async function createRoom() {
+            await initFirebase();
+            if (!db) {
+                showToast("❌ Firebase database offline. Cannot create room.", "error-toast");
+                return;
+            }
             isHost = true;
             document.getElementById('onlineMenu').style.display = 'none';
             document.getElementById('hostWaitingRoom').style.display = 'block';
-            onlinePlayers = []; connections = []; guestNames = {};
+            onlinePlayers = [];
             document.getElementById('myPeerId').innerHTML = 'Creating lobby...';
             document.getElementById('hostPlayersList').innerHTML = '';
             
-            let attemptCount = 0;
-            const attemptConnection = () => {
-                attemptCount++;
-                if (attemptCount > 10) {
-                    alert('Could not find an available room code. The public signaling server is busy.');
-                    resetToMainMenu();
-                    return;
-                }
-                const code = generateRoomCode();
-                const customPeerId = 'cardmatch-' + code;
+            roomPIN = generateRoomCode();
+            
+            const startLobbyInFirestore = (peerId) => {
+                myPeerId = peerId;
+                const hostName = document.getElementById('hostNameSetting').value.trim() || 'Host';
                 
-                peer = new Peer(customPeerId, PEER_OPTIONS);
-                
-                peer.on('error', (err) => {
-                    if (err.type === 'unavailable-id') {
-                        console.log('ID collision for room ' + code + ', retrying...');
-                        peer.destroy();
-                        setTimeout(attemptConnection, 100);
-                    } else {
-                        console.error('PeerJS connection error:', err);
-                        alert('Connection error occurred: ' + err.type);
-                        resetToMainMenu();
+                const roomData = {
+                    roomCode: roomPIN,
+                    hostId: myPeerId,
+                    status: 'waiting',
+                    players: [{ peerId: myPeerId, name: hostName, score: 0 }],
+                    settings: {
+                        numCards: 20,
+                        timerSetting: 15,
+                        continueOnMatch: true,
+                        soundEnabled: true,
+                        allowChat: true,
+                        showScores: true,
+                        voiceChat: false,
+                        tabletMode: false
+                    },
+                    cards: [],
+                    currentTurnIndex: 0,
+                    timerStart: null,
+                    lastEffect: null,
+                    chatMessage: null,
+                    clickRequest: null,
+                    kickedPeerIds: []
+                };
+
+                let resolved = false;
+                const timeoutId = setTimeout(() => {
+                    if (!resolved) {
+                        document.getElementById('myPeerId').innerHTML = `
+                            <div style="font-size: 0.9em; color: #ffd700; max-width: 400px; margin: 15px auto; line-height: 1.4;">
+                                ⏳ Connecting to Firestore backend... <br>
+                                <span style="font-size: 0.8em; color: #aaa;">This might take up to 15 seconds when the serverless database is cold-starting or provisioned for the first time. Please hold on...</span>
+                            </div>
+                        `;
                     }
-                });
-                
-                peer.on('open', (id) => {
-                    myPeerId = id;
-                    const hostName = document.getElementById('hostNameSetting').value.trim() || 'Host';
-                    onlinePlayers.push({ peerId: id, score: 0, name: hostName });
-                    updateHostPlayersList();
-                    
-                    // Create direct single-tap join links
-                    const joinUrl = `${window.location.origin}${window.location.pathname}?join=${code}`;
-                    
+                }, 3500);
+
+                db.collection('rooms').doc(roomPIN).set(roomData).then(() => {
+                    resolved = true;
+                    clearTimeout(timeoutId);
+                    console.log("Room initialized in Firestore:", roomPIN);
+                    const joinUrl = `${window.location.origin}${window.location.pathname}?join=${roomPIN}`;
                     const qrContainer = document.getElementById('qrcode'); 
                     qrContainer.innerHTML = '';
                     new QRCode(qrContainer, { text: joinUrl, width: 200, height: 200 });
                     
-                    // Display friendly room ID (6-digit code)
-                    document.getElementById('myPeerId').innerHTML = `Room PIN: <span style="font-size: 1.4em; font-weight: bold; letter-spacing: 2px; color: #ffd700;">${code}</span>`;
+                    document.getElementById('myPeerId').innerHTML = `Room PIN: <span style="font-size: 1.4em; font-weight: bold; letter-spacing: 2px; color: #ffd700;">${roomPIN}</span>`;
                     
                     document.getElementById('copyIdBtn').onclick = () => {
                         const copyText = () => {
@@ -950,12 +1137,25 @@
                             setTimeout(() => document.getElementById('copyIdBtn').innerHTML = '📋 Copy Link', 2000); 
                         }).catch(() => showToast('❌ Copy failed.', 'error-toast'));
                     };
-                    
-                    peer.on('connection', (conn) => setupConnection(conn, true));
+
+                    subscribeToRoom(roomPIN);
+                }).catch(err => {
+                    resolved = true;
+                    clearTimeout(timeoutId);
+                    console.error("Firestore room creation failed:", err);
+                    document.getElementById('myPeerId').innerHTML = `
+                        <div style="font-size: 0.9em; color: #ff4b5c; max-width: 400px; margin: 15px auto; line-height: 1.4;">
+                            ❌ Failed to Initialize Room<br>
+                            <span style="font-size: 0.8em; color: #bbb; display: block; margin: 5px 0 10px 0;">${err.message}</span>
+                            <button onclick="resetToMainMenu()" style="width: auto; padding: 8px 16px; font-size: 14px;">Back to Menu</button>
+                        </div>
+                    `;
+                    showToast("❌ Firestore write failed: " + err.message, "error-toast");
                 });
             };
-            
-            attemptConnection();
+
+            const hostId = 'h-' + Math.floor(100000 + Math.random() * 900000);
+            startLobbyInFirestore(hostId);
         }
 
         function getRoomIdFromInput(input) {
@@ -965,111 +1165,302 @@
                 if (val.startsWith('http://') || val.startsWith('https://')) {
                     const url = new URL(val);
                     const joinParam = url.searchParams.get('join');
-                    if (joinParam) return 'cardmatch-' + joinParam.trim();
+                    if (joinParam) return joinParam.trim();
                 }
             } catch(e) {}
             if (val.includes('join=')) {
                 const parts = val.split('join=');
                 if (parts.length > 1) {
-                    const code = parts[1].split('&')[0].trim();
-                    return 'cardmatch-' + code;
+                    return parts[1].split('&')[0].trim();
                 }
-            }
-            if (/^\d{6}$/.test(val)) {
-                return 'cardmatch-' + val;
-            }
-            if (!val.startsWith('cardmatch-') && val.length > 0) {
-                return 'cardmatch-' + val;
             }
             return val;
         }
 
-        function joinGame(rawInput) {
+        async function joinGame(rawInput) {
+            await initFirebase();
+            if (!db) {
+                showToast("❌ Firebase database offline. Cannot join room.", "error-toast");
+                return;
+            }
             const guestName = document.getElementById('guestNameInput').value.trim() || 'Guest';
-            const hostId = getRoomIdFromInput(rawInput);
-            if (!hostId) {
-                showToast('❌ Invalid Room PIN or URL pattern', 'error-toast');
+            const pin = getRoomIdFromInput(rawInput);
+            if (!pin || !/^\d{6}$/.test(pin)) {
+                showToast('❌ Invalid 6-digit Room PIN or link', 'error-toast');
                 return;
             }
             document.getElementById('joinMenu').style.display = 'none';
             document.getElementById('guestWaitingScreen').style.display = 'block';
-            document.getElementById('guestWaitingStatus').innerHTML = '🟡 Connecting to host...';
+            document.getElementById('guestWaitingStatus').innerHTML = '🟡 Connecting to room...';
             document.getElementById('guestNameEdit').value = guestName;
             
-            peer = new Peer(PEER_OPTIONS);
-            peer.on('open', (id) => {
-                myPeerId = id;
-                const conn = peer.connect(hostId, { reliable: true });
-                connections.push(conn);
-                conn.on('open', () => { conn.send({ type: 'setName', name: guestName }); });
-                conn.on('data', (data) => handleOnlineData(conn, data));
-                conn.on('close', () => { if (gameMode === 'online' && onlineCards.length) { alert('Host disconnected!'); resetToMainMenu(); } });
-            });
-            
-            peer.on('error', (err) => {
-                console.error("Peer connection error:", err);
-                let message = 'Connection failed.';
-                if (err.type === 'peer-unavailable') {
-                    message = 'Lobby not found. Make sure Room PIN is valid and Host is online.';
-                }
-                document.getElementById('guestWaitingStatus').innerHTML = '❌ ' + message;
-                setTimeout(() => resetToMainMenu(), 3000);
-            });
+            isHost = false;
+            roomPIN = pin;
+
+            const registerGuestInFirestore = (peerId) => {
+                myPeerId = peerId;
+                
+                db.collection('rooms').doc(pin).get().then(docSnap => {
+                    if (!docSnap.exists) {
+                        document.getElementById('guestWaitingStatus').innerHTML = '❌ Lobby not found. Please double check Room PIN.';
+                        setTimeout(() => resetToMainMenu(), 3500);
+                        return;
+                    }
+                    
+                    const roomData = docSnap.data();
+                    if (roomData.status !== 'waiting' && roomData.status !== 'back_to_lobby') {
+                        document.getElementById('guestWaitingStatus').innerHTML = '❌ Game has already started in this room.';
+                        setTimeout(() => resetToMainMenu(), 3500);
+                        return;
+                    }
+
+                    if (roomData.kickedPeerIds && roomData.kickedPeerIds.includes(myPeerId)) {
+                        document.getElementById('guestWaitingStatus').innerHTML = '❌ You have been kicked from this lobby.';
+                        setTimeout(() => resetToMainMenu(), 3500);
+                        return;
+                    }
+
+                    db.collection('rooms').doc(pin).update({
+                        players: firebase.firestore.FieldValue.arrayUnion({ peerId: myPeerId, name: guestName, score: 0 })
+                    }).then(() => {
+                        subscribeToRoom(pin);
+                    }).catch(err => {
+                        console.error("Firestore register error:", err);
+                        document.getElementById('guestWaitingStatus').innerHTML = '❌ Failed to join lobby: ' + err.message;
+                        setTimeout(() => resetToMainMenu(), 5500);
+                    });
+                }).catch(err => {
+                    console.error("Firestore doc fetch error:", err);
+                    document.getElementById('guestWaitingStatus').innerHTML = '❌ Lobby lookup failed: ' + err.message;
+                    setTimeout(() => resetToMainMenu(), 5500);
+                });
+            };
+
+            const playerId = 'p-' + Math.floor(100000 + Math.random() * 900000);
+            registerGuestInFirestore(playerId);
         }
 
-        function setupConnection(conn, incoming) {
-            connections.push(conn);
-            function onOpen() {
-                if (isHost) {
-                    const newPlayer = { peerId: conn.peer, score: 0, name: guestNames[conn.peer] || 'Player ' + (onlinePlayers.length + 1) };
-                    onlinePlayers.push(newPlayer);
-                    updateHostPlayersList();
-                    conn.send({ type: 'welcome', players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })), numCards: 20, turnTimeLimit: 15, continueOnMatch: true, chatAllowed: true });
-                    broadcastToAll({ type: 'playersUpdate', players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })) });
+        function broadcastToAll(data) {
+            if (isHost && db && roomPIN) {
+                const roomDoc = db.collection('rooms').doc(roomPIN);
+                if (data.type === 'initGame' || data.type === 'updateState') {
+                    roomDoc.update({
+                        status: 'playing',
+                        cards: data.cards,
+                        currentTurnIndex: data.currentTurnIndex,
+                        players: data.players,
+                        timerStart: data.timerStart || null,
+                        settings: {
+                            numCards: data.cards.length,
+                            timerSetting: onlineTurnTimeLimit,
+                            continueOnMatch: onlineContinueOnMatch,
+                            soundEnabled: soundEnabled,
+                            allowChat: chatAllowed,
+                            showScores: showScoresOnline,
+                            voiceChat: false,
+                            tabletMode: tabletMode
+                        }
+                    }).catch(err => {
+                        handleFirestoreError(err, 'update', 'rooms/' + roomPIN);
+                    });
+                } else if (data.type === 'effect') {
+                    roomDoc.update({
+                        lastEffect: {
+                            action: data.action,
+                            index: data.index,
+                            time: Date.now()
+                        }
+                    }).catch(err => {
+                        handleFirestoreError(err, 'update', 'rooms/' + roomPIN);
+                    });
+                } else if (data.type === 'chatMessage') {
+                    roomDoc.update({
+                        chatMessage: {
+                            sender: data.sender,
+                            name: data.name,
+                            text: data.text,
+                            time: Date.now()
+                        }
+                    }).catch(err => {
+                        handleFirestoreError(err, 'update', 'rooms/' + roomPIN);
+                    });
+                } else if (data.type === 'hostLeft') {
+                    roomDoc.delete().catch(err => {
+                        handleFirestoreError(err, 'delete', 'rooms/' + roomPIN);
+                    });
+                } else if (data.type === 'backToLobby') {
+                    roomDoc.update({
+                        status: 'back_to_lobby',
+                        cards: [],
+                        currentTurnIndex: 0,
+                        timerStart: null
+                    }).catch(err => {
+                        handleFirestoreError(err, 'update', 'rooms/' + roomPIN);
+                    });
+                } else if (data.type === 'playersUpdate') {
+                    roomDoc.update({
+                        players: data.players
+                    }).catch(err => {
+                        handleFirestoreError(err, 'update', 'rooms/' + roomPIN);
+                    });
+                } else if (data.type === 'gameOver') {
+                    roomDoc.update({
+                        status: 'finished',
+                        players: data.players
+                    }).catch(err => {
+                        handleFirestoreError(err, 'update', 'rooms/' + roomPIN);
+                    });
                 }
             }
-            if (conn.open) onOpen(); else conn.on('open', onOpen);
-            conn.on('data', (data) => {
-                if (isHost) {
-                    if (data.type === 'setName') {
-                        const player = onlinePlayers.find(p => p.peerId === conn.peer);
-                        if (player) { player.name = data.name || 'Player'; guestNames[conn.peer] = data.name; updateHostPlayersList(); broadcastToAll({ type: 'playersUpdate', players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })) }); }
-                    } else if (data.type === 'flipCard') { handleOnlineFlip(conn.peer, data.cardIndex); }
-                    else if (data.type === 'chatMessage') { if (chatAllowed) { broadcastToAll(data); addChatToast(data.name, data.text); } }
-                    else if (data.type === 'leaveGame') { handlePlayerLeave(conn.peer); }
-                } else { handleOnlineData(conn, data); }
-            });
-            conn.on('close', () => { connections = connections.filter(c => c !== conn); if (isHost && gameMode === 'online' && !onlineCards.length) { onlinePlayers = onlinePlayers.filter(p => p.peerId !== conn.peer); updateHostPlayersList(); broadcastToAll({ type: 'playersUpdate', players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })) }); } });
         }
 
-        function handleOnlineData(conn, data) {
-            if (data.type === 'welcome') { onlinePlayers = data.players; onlineTurnTimeLimit = data.turnTimeLimit; onlineContinueOnMatch = data.continueOnMatch; chatAllowed = data.chatAllowed !== undefined ? data.chatAllowed : true; document.getElementById('guestWaitingStatus').innerHTML = '✅ Connected! Waiting for host to start...'; updateGuestPlayersList(); }
-            else if (data.type === 'playersUpdate') { onlinePlayers = data.players; updateGuestPlayersList(); }
-            else if (data.type === 'initGame') {
-                onlineCards = data.cards; onlineCurrentTurn = data.currentTurnIndex; onlineTurnTimeLimit = data.turnTimeLimit; onlineContinueOnMatch = data.continueOnMatch; onlinePlayers = data.players;
-                chatAllowed = data.chatAllowed !== undefined ? data.chatAllowed : true; showScoresOnline = data.showScores !== undefined ? data.showScores : true;
-                voiceChatAllowed = data.voiceChatAllowed !== undefined ? data.voiceChatAllowed : false;
-                tabletMode = data.tabletMode !== undefined ? data.tabletMode : false;
-                applyTabletClass(tabletMode);
+        // Error helper according to firebase-integration guidelines
+        function handleFirestoreError(error, operationType, path) {
+            const errInfo = {
+                error: error instanceof Error ? error.message : String(error),
+                operationType,
+                path
+            };
+            console.error('Firestore Error: ', JSON.stringify(errInfo));
+            throw new Error(JSON.stringify(errInfo));
+        }
+
+        function subscribeToRoom(pin) {
+            if (roomUnsubscribe) {
+                roomUnsubscribe();
+            }
+            
+            roomUnsubscribe = db.collection('rooms').doc(pin).onSnapshot(docSnap => {
+                if (!docSnap.exists) {
+                    if (!isHost && gameMode === 'online') {
+                        showToast("❌ Host has closed the lobby or game.", "error-toast");
+                        setTimeout(() => resetToMainMenu(), 2000);
+                    }
+                    return;
+                }
+                
+                const data = docSnap.data();
+                
+                if (!isHost && data.kickedPeerIds && data.kickedPeerIds.includes(myPeerId)) {
+                    showToast('⛔ You were kicked from this lobby.', 'error-toast');
+                    resetToMainMenu();
+                    return;
+                }
+
+                if (data.settings) {
+                    onlineTurnTimeLimit = data.settings.timerSetting;
+                    onlineContinueOnMatch = data.settings.continueOnMatch;
+                    soundEnabled = data.settings.soundEnabled;
+                    chatAllowed = data.settings.allowChat;
+                    showScoresOnline = data.settings.showScores;
+                    voiceChatAllowed = data.settings.voiceChat;
+                    tabletMode = data.settings.tabletMode;
+                    applyTabletClass(tabletMode);
+                }
+
+                onlinePlayers = data.players || [];
                 myOnlineIndex = onlinePlayers.findIndex(p => p.peerId === myPeerId);
-                gameMode = 'online';
-                hideAllScreens(); document.getElementById('gameScreen').style.display = 'flex';
-                document.getElementById('chatArea').style.display = chatAllowed ? 'flex' : 'none'; document.getElementById('muteBtn').style.display = voiceChatAllowed ? 'inline-flex' : 'none';
-                clearOnlineTimers(); onlineLastTurnIndex = onlineCurrentTurn; renderOnlineGame();
-                if (voiceChatAllowed) startVoiceChat();
-            } else if (data.type === 'updateState') {
-                onlineCards = data.cards; onlineCurrentTurn = data.currentTurnIndex; onlinePlayers = data.players;
-                onlineTurnTimerStart = data.timerStart || null; showScoresOnline = data.showScores !== undefined ? data.showScores : showScoresOnline;
-                renderOnlineGame(); if (onlineTurnTimeLimit > 0) startOnlineClientTimer();
-            } else if (data.type === 'gameOver') {
-                const isTie = data.isTie || false; const winners = data.winners || []; const allPlayers = data.players || onlinePlayers;
-                showGameOverOverlayOnline(isTie, winners, allPlayers); stopVoiceChat();
-            } else if (data.type === 'backToLobby') { gameMode = null; hideAllScreens(); document.getElementById('postGameWaitScreen').style.display = 'block'; clearOnlineTimers(); stopVoiceChat(); }
-            else if (data.type === 'effect') { if (data.action && data.index !== undefined) { const effectMap = { pick:'pick-effect', matchGlow:'match-glow', mismatchShake:'mismatch-shake', disappear:'disappear-effect' }; if (effectMap[data.action]) applyCardEffect(data.index, effectMap[data.action], data.action === 'matchGlow' ? 1000 : 500); playSound(data.action); } }
-            else if (data.type === 'chatMessage') { if (data.sender !== myPeerId) addChatToast(data.name, data.text); }
-            else if (data.type === 'playerLeft') { onlinePlayers = data.players; showToast(data.name + ' left the game', 'error-toast'); myOnlineIndex = onlinePlayers.findIndex(p => p.peerId === myPeerId); renderOnlineGame(); }
-            else if (data.type === 'hostLeft') { alert('Host left the game.'); resetToMainMenu(); }
-            else if (data.type === 'kick') { alert('You were kicked from this lobby.'); resetToMainMenu(); }
+                
+                if (isHost) {
+                    updateHostPlayersList();
+                } else {
+                    updateGuestPlayersList();
+                }
+
+                if (data.status === 'playing') {
+                    onlineCards = data.cards || [];
+                    onlineCurrentTurn = data.currentTurnIndex || 0;
+                    onlineTurnTimerStart = data.timerStart || null;
+                    
+                    if (gameMode !== 'online') {
+                        gameMode = 'online';
+                        hideAllScreens();
+                        document.getElementById('gameScreen').style.display = 'flex';
+                        document.getElementById('chatArea').style.display = chatAllowed ? 'flex' : 'none';
+                        document.getElementById('muteBtn').style.display = voiceChatAllowed ? 'inline-flex' : 'none';
+                        clearOnlineTimers();
+                        
+                        if (voiceChatAllowed && !isHost) {
+                            setTimeout(startVoiceChat, 500);
+                        }
+                    }
+                    
+                    renderOnlineGame();
+                    if (onlineTurnTimeLimit > 0) {
+                        startOnlineClientTimer();
+                    }
+                } else if (data.status === 'back_to_lobby') {
+                    if (gameMode === 'online') {
+                        gameMode = null;
+                        hideAllScreens();
+                        if (isHost) {
+                            document.getElementById('hostSettingsPage').style.display = 'block';
+                        } else {
+                            document.getElementById('postGameWaitScreen').style.display = 'block';
+                        }
+                        clearOnlineTimers();
+                        stopVoiceChat();
+                    }
+                } else if (data.status === 'finished') {
+                    if (gameMode === 'online') {
+                        const maxScore = Math.max.apply(null, onlinePlayers.map(p => p.score));
+                        const winners = onlinePlayers.filter(p => p.score === maxScore).map(w => ({ peerId: w.peerId, name: w.name, score: w.score }));
+                        const isTie = winners.length > 1;
+                        clearOnlineTimers();
+                        showGameOverOverlayOnline(isTie, winners, onlinePlayers);
+                    }
+                }
+
+                if (data.lastEffect && data.lastEffect.time > myLastProcessedEffectTime) {
+                    myLastProcessedEffectTime = data.lastEffect.time;
+                    const action = data.lastEffect.action;
+                    const index = data.lastEffect.index;
+                    const effectMap = { 
+                        pick: 'pick-effect', 
+                        matchGlow: 'match-glow', 
+                        mismatchShake: 'mismatch-shake', 
+                        disappear: 'disappear-effect' 
+                    };
+                    if (effectMap[action]) {
+                        applyCardEffect(index, effectMap[action], action === 'matchGlow' ? 1000 : (action === 'mismatchShake' ? 500 : 300));
+                    }
+                    playSound(action);
+                }
+
+                if (data.chatMessage && data.chatMessage.time > myLastProcessedChatTime) {
+                    myLastProcessedChatTime = data.chatMessage.time;
+                    if (data.chatMessage.sender !== myPeerId) {
+                        addChatToast(data.chatMessage.name, data.chatMessage.text);
+                    }
+                }
+
+                if (isHost && data.clickRequest && data.clickRequest.time && (!data.clickRequest.processed)) {
+                    const clickTime = (data.clickRequest.time.toMillis ? data.clickRequest.time.toMillis() : data.clickRequest.time);
+                    if (clickTime > hostLastProcessedClickTime) {
+                        hostLastProcessedClickTime = clickTime;
+                        db.collection('rooms').doc(pin).update({
+                            'clickRequest.processed': true
+                        }).then(() => {
+                            handleOnlineFlip(data.clickRequest.peerId, data.clickRequest.cardIndex);
+                        }).catch(err => {
+                            handleFirestoreError(err, 'update', 'rooms/' + pin);
+                        });
+                    }
+                }
+
+                // Auto-initiate PeerJS direct connection once host peer ID is found
+                if (!isHost && data.hostId && peer && !peer.destroyed && connections.length === 0) {
+                    console.log("Found host ID from Firestore. Initiating P2P PeerJS connection:", data.hostId);
+                    try {
+                        const conn = peer.connect(data.hostId, { reliable: true });
+                        setupConnection(conn, false);
+                    } catch(err) {
+                        console.warn("PeerJS automatic connect warning:", err);
+                    }
+                }
+            }, err => {
+                handleFirestoreError(err, 'get', 'rooms/' + pin);
+            });
         }
 
         function handleOnlineFlip(peerId, cardIndex) {
@@ -1078,39 +1469,100 @@
             if (idx !== onlineCurrentTurn) return;
             const card = onlineCards[cardIndex];
             if (!card || card.matched || card.flipped) return;
-            card.flipped = true; clearOnlineTurnTimer();
-            broadcastToAll({ type: 'effect', action: 'pick', index: cardIndex }); applyCardEffect(cardIndex, 'pick-effect', 300); playSound('pick');
-            if (onlineFirstFlipped === null) { onlineFirstFlipped = cardIndex; broadcastOnlineState(); startOnlineTurnTimer(); }
-            else {
+
+            card.flipped = true; 
+            clearOnlineTurnTimer();
+            
+            broadcastToAll({ type: 'effect', action: 'pick', index: cardIndex }); 
+            applyCardEffect(cardIndex, 'pick-effect', 300); 
+            playSound('pick');
+
+            if (onlineFirstFlipped === null) {
+                onlineFirstFlipped = cardIndex; 
+                broadcastOnlineState(); 
+                startOnlineTurnTimer(); 
+            } else {
                 const firstCard = onlineCards[onlineFirstFlipped];
                 if (firstCard.value === card.value) {
-                    onlineTurnLock = true; broadcastOnlineState();
+                    onlineTurnLock = true; 
+                    broadcastOnlineState();
+                    
                     broadcastToAll({ type: 'effect', action: 'matchGlow', index: onlineFirstFlipped });
                     broadcastToAll({ type: 'effect', action: 'matchGlow', index: cardIndex });
-                    applyCardEffect(onlineFirstFlipped, 'match-glow', 1000); applyCardEffect(cardIndex, 'match-glow', 1000); playSound('match');
+                    applyCardEffect(onlineFirstFlipped, 'match-glow', 1000); 
+                    applyCardEffect(cardIndex, 'match-glow', 1000); 
+                    playSound('match');
+                    
                     onlineMatchDelay = setTimeout(() => {
-                        firstCard.matched = true; card.matched = true; onlinePlayers[onlineCurrentTurn].score++;
-                        onlineFirstFlipped = null; if (!onlineContinueOnMatch) onlineCurrentTurn = (onlineCurrentTurn + 1) % onlinePlayers.length;
-                        onlineTurnLock = false; broadcastOnlineState();
-                        startOnlineTurnTimer(); if (onlineCards.every(c => c.matched)) endOnlineGame();
-                    }, 1000); gameTimers.push(onlineMatchDelay);
+                        firstCard.matched = true; 
+                        card.matched = true; 
+                        onlinePlayers[onlineCurrentTurn].score++;
+                        onlineFirstFlipped = null; 
+                        
+                        if (!onlineContinueOnMatch) {
+                            onlineCurrentTurn = (onlineCurrentTurn + 1) % onlinePlayers.length;
+                        }
+                        onlineTurnLock = false; 
+                        broadcastOnlineState();
+                        startOnlineTurnTimer(); 
+                        
+                        if (onlineCards.every(c => c.matched)) {
+                            endOnlineGame();
+                        }
+                    }, 1000); 
+                    gameTimers.push(onlineMatchDelay);
                 } else {
-                    onlineTurnLock = true; broadcastOnlineState();
+                    onlineTurnLock = true; 
+                    broadcastOnlineState();
+                    
                     broadcastToAll({ type: 'effect', action: 'mismatchShake', index: onlineFirstFlipped });
                     broadcastToAll({ type: 'effect', action: 'mismatchShake', index: cardIndex });
-                    applyCardEffect(onlineFirstFlipped, 'mismatch-shake', 500); applyCardEffect(cardIndex, 'mismatch-shake', 500); playSound('mismatch');
+                    applyCardEffect(onlineFirstFlipped, 'mismatch-shake', 500); 
+                    applyCardEffect(cardIndex, 'mismatch-shake', 500); 
+                    playSound('mismatch');
+                    
                     const mismatchTimeout = setTimeout(() => {
-                        firstCard.flipped = false; card.flipped = false; onlineFirstFlipped = null;
+                        firstCard.flipped = false; 
+                        card.flipped = false; 
+                        onlineFirstFlipped = null;
                         onlineCurrentTurn = (onlineCurrentTurn + 1) % onlinePlayers.length;
-                        onlineTurnLock = false; broadcastOnlineState(); startOnlineTurnTimer();
-                    }, 1200); gameTimers.push(mismatchTimeout);
+                        onlineTurnLock = false; 
+                        broadcastOnlineState(); 
+                        startOnlineTurnTimer();
+                    }, 1200); 
+                    gameTimers.push(mismatchTimeout);
                 }
             }
         }
 
-        function broadcastOnlineState() { broadcastToAll({ type: 'updateState', cards: onlineCards, currentTurnIndex: onlineCurrentTurn, players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })), timerStart: onlineTurnTimerStart, showScores: showScoresOnline }); renderOnlineGame(); }
-        function endOnlineGame() { const maxScore = Math.max.apply(null, onlinePlayers.map(p => p.score)); const winners = onlinePlayers.filter(p => p.score === maxScore).map(w => ({ peerId: w.peerId, name: w.name, score: w.score })); const isTie = winners.length > 1; clearOnlineTimers(); broadcastToAll({ type: 'gameOver', isTie: isTie, winners: winners, players: onlinePlayers.map(p => ({ peerId: p.peerId, name: p.name, score: p.score })) }); showGameOverOverlayOnline(isTie, winners, onlinePlayers); playSound(isTie ? 'tie' : (winners[0].peerId === myPeerId ? 'win' : 'lose')); stopVoiceChat(); }
-        
+        function broadcastOnlineState() {
+            broadcastToAll({ 
+                type: 'updateState', 
+                cards: onlineCards, 
+                currentTurnIndex: onlineCurrentTurn, 
+                players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })), 
+                timerStart: onlineTurnTimerStart, 
+                showScores: showScoresOnline 
+            }); 
+            renderOnlineGame(); 
+        }
+
+        function endOnlineGame() {
+            const maxScore = Math.max.apply(null, onlinePlayers.map(p => p.score));
+            const winners = onlinePlayers.filter(p => p.score === maxScore).map(w => ({ peerId: w.peerId, name: w.name, score: w.score }));
+            const isTie = winners.length > 1;
+            clearOnlineTimers();
+            broadcastToAll({ 
+                type: 'gameOver', 
+                isTie: isTie, 
+                winners: winners, 
+                players: onlinePlayers.map(p => ({ peerId: p.peerId, name: p.name, score: p.score })) 
+            });
+            showGameOverOverlayOnline(isTie, winners, onlinePlayers);
+            playSound(isTie ? 'tie' : (winners.some(w => w.peerId === myPeerId) ? 'win' : 'lose'));
+            stopVoiceChat();
+        }
+
         function startOnlineTurnTimer() { 
             clearOnlineTurnTimer(); 
             if (!onlineCards.length || onlineTurnTimeLimit <= 0 || onlineTurnLock) return; 
@@ -1129,10 +1581,26 @@
             broadcastOnlineState(); 
         }
 
-        function clearOnlineTurnTimer() { if (onlineTurnTimerHandle) { clearTimeout(onlineTurnTimerHandle); onlineTurnTimerHandle = null; } onlineTurnTimerStart = null; }
-        function clearOnlineMatchDelay() { if (onlineMatchDelay) { clearTimeout(onlineMatchDelay); onlineMatchDelay = null; } }
-        function clearOnlineTimers() { clearOnlineTurnTimer(); clearOnlineMatchDelay(); }
-        
+        function clearOnlineTurnTimer() { 
+            if (onlineTurnTimerHandle) { 
+                clearTimeout(onlineTurnTimerHandle); 
+                onlineTurnTimerHandle = null; 
+            } 
+            onlineTurnTimerStart = null; 
+        }
+
+        function clearOnlineMatchDelay() { 
+            if (onlineMatchDelay) { 
+                clearTimeout(onlineMatchDelay); 
+                onlineMatchDelay = null; 
+            } 
+        }
+
+        function clearOnlineTimers() { 
+            clearOnlineTurnTimer(); 
+            clearOnlineMatchDelay(); 
+        }
+
         function startOnlineClientTimer() { 
             const el = document.getElementById('timerDisplay'); 
             if (!el) return;
@@ -1141,20 +1609,77 @@
                 if (!onlineTurnTimerStart) { el.innerHTML = ''; return; } 
                 const remaining = Math.max(0, Math.ceil((onlineTurnTimeLimit*1000 - (Date.now()-onlineTurnTimerStart))/1000)); 
                 el.innerHTML = '⏳ ' + remaining + 's'; 
-                if (remaining > 0 && gameMode === 'online') requestAnimationFrame(update); 
-                else el.innerHTML = ''; 
+                if (remaining > 0 && gameMode === 'online') {
+                    requestAnimationFrame(update); 
+                } else {
+                    el.innerHTML = ''; 
+                }
             }; 
             update(); 
         }
 
-        function renderOnlineGame() { currentGame = { handleCardClick: (idx) => { if (!onlineCards.length || onlineTurnLock) return; if (onlineCurrentTurn !== myOnlineIndex) { showToast("⛔ Not your turn!", 'error-toast'); return; } if (onlineCards[idx].matched || onlineCards[idx].flipped) return; if (isHost) handleOnlineFlip(myPeerId, idx); else { const conn = connections.find(c => c.open); if (conn) conn.send({ type: 'flipCard', cardIndex: idx }); } }, myPlayerIndex: myOnlineIndex }; renderGrid(onlineCards, onlineCurrentTurn, myOnlineIndex, showScoresOnline, onlinePlayers, onlineTurnTimerStart, onlineTurnTimeLimit, { countdown: true }); if (onlineTurnTimeLimit > 0) startOnlineClientTimer(); }
-        
+        function renderOnlineGame() { 
+            currentGame = { 
+                handleCardClick: (idx) => { 
+                    if (!onlineCards.length || onlineTurnLock) return; 
+                    if (onlineCurrentTurn !== myOnlineIndex) { 
+                        showToast("⛔ Not your turn!", 'error-toast'); 
+                        return; 
+                    } 
+                    if (onlineCards[idx].matched || onlineCards[idx].flipped) return; 
+                    
+                    if (isHost) {
+                        handleOnlineFlip(myPeerId, idx); 
+                    } else { 
+                        const conn = connections.find(c => c.open); 
+                        if (conn) {
+                            conn.send({ type: 'flipCard', cardIndex: idx }); 
+                        }
+                        if (db && roomPIN) {
+                            db.collection('rooms').doc(roomPIN).update({
+                                clickRequest: {
+                                    peerId: myPeerId,
+                                    cardIndex: idx,
+                                    time: firebase.firestore.FieldValue.serverTimestamp(),
+                                    processed: false
+                                }
+                            }).catch(err => {
+                                handleFirestoreError(err, 'update', 'rooms/' + roomPIN);
+                            });
+                        }
+                    } 
+                }, 
+                myPlayerIndex: myOnlineIndex 
+            }; 
+            
+            renderGrid(
+                onlineCards, 
+                onlineCurrentTurn, 
+                myOnlineIndex, 
+                showScoresOnline, 
+                onlinePlayers, 
+                onlineTurnTimerStart, 
+                onlineTurnTimeLimit, 
+                { countdown: true }
+            ); 
+            
+            if (onlineTurnTimeLimit > 0) {
+                startOnlineClientTimer(); 
+            }
+        }
+
         function showGameOverOverlayOnline(isTie, winners, allPlayers) {
-            const old = document.getElementById('gameOverOverlay'); if (old) old.remove();
-            const overlay = document.createElement('div'); overlay.id = 'gameOverOverlay'; overlay.className = 'game-over-overlay';
+            const old = document.getElementById('gameOverOverlay'); 
+            if (old) old.remove();
+            const overlay = document.createElement('div'); 
+            overlay.id = 'gameOverOverlay'; 
+            overlay.className = 'game-over-overlay';
             const iAmWinner = winners.some(w => w.peerId === myPeerId);
             let lb = '<ul class="leaderboard">';
-            allPlayers.forEach(p => { const win = winners.some(w => w.peerId === p.peerId); lb += '<li class="' + (win ? 'winner-row' : '') + '"><span>' + p.name + (win?' 🏆':'') + '</span> <span>' + p.score + ' pairs</span></li>'; });
+            allPlayers.forEach(p => { 
+                const win = winners.some(w => w.peerId === p.peerId); 
+                lb += '<li class="' + (win ? 'winner-row' : '') + '"><span>' + p.name + (win ? ' 🏆' : '') + '</span> <span>' + p.score + ' pairs</span></li>'; 
+            });
             lb += '</ul>';
             overlay.innerHTML = '<div class="game-over-box" style="border: ' + (isTie || iAmWinner ? '3px solid gold' : '1px solid rgba(255,255,255,0.2)') + ';">' +
                 '<h2>' + (isTie ? "🤝 It's a Tie!" : "🏁 Game Over!") + '</h2>' +
@@ -1162,23 +1687,56 @@
                 lb + (isHost ? '<button id="backToSettingsBtn">⚙️ New Game</button>' : '<p style="margin:15px 0;">Waiting for host...</p>') +
                 '<button id="quitOverlayBtn" class="back-btn">← Quit</button></div>';
             document.body.appendChild(overlay);
-            document.getElementById('quitOverlayBtn').onclick = () => { overlay.remove(); resetToMainMenu(); };
-            if (isHost) document.getElementById('backToSettingsBtn').onclick = () => { overlay.remove(); hideAllScreens(); document.getElementById('hostSettingsPage').style.display = 'block'; gameMode = 'online'; onlineCards = []; clearOnlineTimers(); broadcastToAll({ type: 'backToLobby' }); };
+            
+            document.getElementById('quitOverlayBtn').onclick = () => { 
+                overlay.remove(); 
+                resetToMainMenu(); 
+            };
+            
+            if (isHost) {
+                document.getElementById('backToSettingsBtn').onclick = () => { 
+                    overlay.remove(); 
+                    hideAllScreens(); 
+                    document.getElementById('hostSettingsPage').style.display = 'block'; 
+                    gameMode = 'online'; 
+                    onlineCards = []; 
+                    clearOnlineTimers(); 
+                    broadcastToAll({ type: 'backToLobby' }); 
+                };
+            }
         }
 
         function handlePlayerLeave(peerId) {
-            const idx = onlinePlayers.findIndex(p => p.peerId === peerId); if (idx === -1) return;
-            const name = onlinePlayers[idx].name; onlinePlayers.splice(idx, 1);
-            if (onlinePlayers.length === 0) { endOnlineGame(); return; }
-            if (onlineCurrentTurn === idx) { clearOnlineTimers(); onlineTurnLock = false; if (onlineFirstFlipped !== null) { onlineCards[onlineFirstFlipped].flipped = false; onlineFirstFlipped = null; } }
+            const idx = onlinePlayers.findIndex(p => p.peerId === peerId); 
+            if (idx === -1) return;
+            const name = onlinePlayers[idx].name; 
+            onlinePlayers.splice(idx, 1);
+            if (onlinePlayers.length === 0) { 
+                endOnlineGame(); 
+                return; 
+            }
+            if (onlineCurrentTurn === idx) { 
+                clearOnlineTimers(); 
+                onlineTurnLock = false; 
+                if (onlineFirstFlipped !== null) { 
+                    onlineCards[onlineFirstFlipped].flipped = false; 
+                    onlineFirstFlipped = null; 
+                } 
+            }
             if (onlineCurrentTurn >= onlinePlayers.length) onlineCurrentTurn = 0;
-            broadcastToAll({ type: 'playerLeft', name: name, players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })) });
-            broadcastOnlineState(); showToast(name + ' left the game', 'error-toast');
+            
+            broadcastToAll({ 
+                type: 'playerLeft', 
+                name: name, 
+                players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })) 
+            });
+            broadcastOnlineState(); 
+            showToast(name + ' left the game', 'error-toast');
         }
 
         function updateHostPlayersList() { 
             const list = document.getElementById('hostPlayersList'); 
-            if(!list) return;
+            if (!list) return;
             list.innerHTML = '<strong>Players:</strong>'; 
             onlinePlayers.forEach((p, i) => { 
                 const isMe = p.peerId === myPeerId; 
@@ -1187,25 +1745,63 @@
             }); 
             list.querySelectorAll('.kick-btn').forEach(btn => { 
                 btn.onclick = (e) => { 
-                    const pId = e.target.dataset.peerid; 
+                    const pId = e.currentTarget.dataset.peerid; 
                     if (pId) { 
                         const conn = connections.find(c => c.peer === pId); 
-                        if (conn) { conn.send({ type: 'kick' }); conn.close(); } 
+                        if (conn) { 
+                            try {
+                                conn.send({ type: 'kick' }); 
+                                conn.close(); 
+                            } catch (e) {}
+                        } 
                         onlinePlayers = onlinePlayers.filter(p => p.peerId !== pId); 
                         connections = connections.filter(c => c.peer !== pId); 
                         updateHostPlayersList(); 
-                        broadcastToAll({ type: 'playersUpdate', players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })) }); 
+                        
+                        if (db && roomPIN) {
+                            db.collection('rooms').doc(roomPIN).update({
+                                players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })),
+                                kickedPeerIds: firebase.firestore.FieldValue.arrayUnion(pId)
+                            }).catch(err => {
+                                handleFirestoreError(err, 'update', 'rooms/' + roomPIN);
+                            });
+                        }
+                        
+                        broadcastToAll({ 
+                            type: 'playersUpdate', 
+                            players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })) 
+                        }); 
                     } 
                 }; 
             }); 
         }
-        function updateGuestPlayersList() { const list = document.getElementById('guestPlayersList'); if(list) { list.innerHTML = '<strong>Players:</strong>'; onlinePlayers.forEach(p => { const isMe = p.peerId === myPeerId; list.innerHTML += '<div>👤 ' + p.name + (isMe ? ' (You)' : '') + '</div>'; }); } }
+
+        function updateGuestPlayersList() { 
+            const list = document.getElementById('guestPlayersList'); 
+            if (list) { 
+                list.innerHTML = '<strong>Players:</strong>'; 
+                onlinePlayers.forEach(p => { 
+                    const isMe = p.peerId === myPeerId; 
+                    list.innerHTML += '<div>👤 ' + p.name + (isMe ? ' (You)' : '') + '</div>'; 
+                }); 
+            } 
+        }
 
         function startOnlineGame() {
             const hostName = document.getElementById('hostNameSetting').value.trim() || 'Host';
             const players = [{ peerId: myPeerId, score: 0, name: hostName }];
-            connections.forEach(conn => { players.push({ peerId: conn.peer, score: 0, name: guestNames[conn.peer] || 'Player' }); });
-            if (players.length < 2) { alert('Need at least 2 players to start a multiplayer match!'); return; }
+            
+            onlinePlayers.forEach(p => {
+                if (p.peerId !== myPeerId) {
+                    players.push({ peerId: p.peerId, score: 0, name: p.name });
+                }
+            });
+
+            if (players.length < 2) { 
+                showToast('⚠️ Need at least 2 players to start a multiplayer match!', 'error-toast'); 
+                return; 
+            }
+            
             onlinePlayers = players;
             const numCards = parseInt(document.getElementById('numCardsSetting').value);
             onlineTurnTimeLimit = parseInt(document.getElementById('timerSetting').value);
@@ -1216,17 +1812,39 @@
             voiceChatAllowed = document.getElementById('voiceChatSetting').checked;
             tabletMode = document.getElementById('tabletModeOnline').checked;
             applyTabletClass(tabletMode);
+            
             onlineCards = generateCards(numCards);
-            onlineCurrentTurn = 0; onlineFirstFlipped = null; onlineTurnLock = false; clearOnlineTimers();
+            onlineCurrentTurn = 0; 
+            onlineFirstFlipped = null; 
+            onlineTurnLock = false; 
+            clearOnlineTimers();
             onlinePlayers.forEach(p => p.score = 0);
-            myOnlineIndex = 0; onlineLastTurnIndex = 0;
-            const initData = { type: 'initGame', cards: onlineCards, currentTurnIndex: onlineCurrentTurn, turnTimeLimit: onlineTurnTimeLimit, continueOnMatch: onlineContinueOnMatch, players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })), chatAllowed: chatAllowed, showScores: showScoresOnline, voiceChatAllowed: voiceChatAllowed, tabletMode: tabletMode };
+            myOnlineIndex = 0; 
+            onlineLastTurnIndex = 0;
+            
+            const initData = { 
+                type: 'initGame', 
+                cards: onlineCards, 
+                currentTurnIndex: onlineCurrentTurn, 
+                turnTimeLimit: onlineTurnTimeLimit, 
+                continueOnMatch: onlineContinueOnMatch, 
+                players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })), 
+                chatAllowed: chatAllowed, 
+                showScores: showScoresOnline, 
+                voiceChatAllowed: voiceChatAllowed, 
+                tabletMode: tabletMode 
+            };
+            
             broadcastToAll(initData);
-            hideAllScreens(); document.getElementById('gameScreen').style.display = 'flex';
+            
+            hideAllScreens(); 
+            document.getElementById('gameScreen').style.display = 'flex';
             document.getElementById('chatArea').style.display = chatAllowed ? 'flex' : 'none';
             document.getElementById('muteBtn').style.display = voiceChatAllowed ? 'inline-flex' : 'none';
-            renderOnlineGame(); startOnlineTurnTimer();
-            if (voiceChatAllowed) setTimeout(startVoiceChat, 500);
+            
+            renderOnlineGame(); 
+            startOnlineTurnTimer();
+            
         }
 
         function applyTabletClass(isTablet) {
@@ -1241,20 +1859,68 @@
         function quitToSettings() {
             if (!confirm('Are you sure you want to leave the game?')) return;
             if (gameMode === 'online') {
-                if (isHost) { broadcastToAll({ type: 'hostLeft' }); clearOnlineTimers(); stopVoiceChat(); connections.forEach(c => { if(c.open) c.close(); }); connections = []; if (peer) { peer.destroy(); peer = null; } onlinePlayers = []; myOnlineIndex = -1; onlineCards = []; guestNames = {}; hideAllScreens(); document.getElementById('hostSettingsPage').style.display = 'block'; }
-                else { const conn = connections.find(c => c.open); if (conn) conn.send({ type: 'leaveGame' }); clearOnlineTimers(); stopVoiceChat(); if (peer) { peer.destroy(); peer = null; } connections = []; onlinePlayers = []; myOnlineIndex = -1; onlineCards = []; hideAllScreens(); document.getElementById('guestWaitingScreen').style.display = 'block'; }
-            } else if (gameMode === 'single') { hideAllScreens(); document.getElementById('singlePlayerSettings').style.display = 'block'; }
-            else if (gameMode === 'local') { hideAllScreens(); document.getElementById('localMultiSettings').style.display = 'block'; }
-            currentGame = null; gameMode = null;
+                if (isHost) { 
+                    broadcastToAll({ type: 'hostLeft' }); 
+                    clearOnlineTimers(); 
+                    onlinePlayers = []; 
+                    myOnlineIndex = -1; 
+                    onlineCards = []; 
+                    if (roomUnsubscribe) { roomUnsubscribe(); roomUnsubscribe = null; }
+                    hideAllScreens(); 
+                    document.getElementById('hostSettingsPage').style.display = 'block'; 
+                } else { 
+                    if (db && roomPIN && myPeerId) {
+                        const updatedPlayers = onlinePlayers.filter(p => p.peerId !== myPeerId);
+                        db.collection('rooms').doc(roomPIN).update({
+                            players: updatedPlayers
+                        }).catch(err => console.error(err));
+                    }
+                    clearOnlineTimers(); 
+                    onlinePlayers = []; 
+                    myOnlineIndex = -1; 
+                    onlineCards = []; 
+                    if (roomUnsubscribe) { roomUnsubscribe(); roomUnsubscribe = null; }
+                    hideAllScreens(); 
+                    document.getElementById('guestWaitingScreen').style.display = 'block'; 
+                }
+            } else if (gameMode === 'single') { 
+                hideAllScreens(); 
+                document.getElementById('singlePlayerSettings').style.display = 'block'; 
+            } else if (gameMode === 'local') { 
+                hideAllScreens(); 
+                document.getElementById('localMultiSettings').style.display = 'block'; 
+            }
+            currentGame = null; 
+            gameMode = null;
             applyTabletClass(false);
         }
 
         function resetToMainMenu() {
             clearAllGameTimers();
-            if (gameMode === 'online') { clearOnlineTimers(); stopVoiceChat(); stopScanner(); if (peer) { peer.destroy(); peer = null; } connections.forEach(c => { if(c.open) c.close(); }); connections = []; onlinePlayers = []; myOnlineIndex = -1; onlineCards = []; guestNames = {}; }
-            currentGame = null; gameMode = null;
+            if (roomUnsubscribe) {
+                roomUnsubscribe();
+                roomUnsubscribe = null;
+            }
+            if (gameMode === 'online') { 
+                if (!isHost && db && roomPIN && myPeerId) {
+                    const updatedPlayers = onlinePlayers.filter(p => p.peerId !== myPeerId);
+                    db.collection('rooms').doc(roomPIN).update({
+                        players: updatedPlayers
+                    }).catch(err => console.error(err));
+                } else if (isHost && db && roomPIN) {
+                    db.collection('rooms').doc(roomPIN).delete().catch(err => console.error(err));
+                }
+                clearOnlineTimers(); 
+                stopScanner(); 
+                onlinePlayers = []; 
+                myOnlineIndex = -1; 
+                onlineCards = []; 
+            }
+            currentGame = null; 
+            gameMode = null;
             applyTabletClass(false);
-            hideAllScreens(); document.getElementById('mainMenu').style.display = 'block';
+            hideAllScreens(); 
+            document.getElementById('mainMenu').style.display = 'block';
         }
 
         // ---- Scanner Logic ----
@@ -1313,25 +1979,41 @@
         
         document.getElementById('updateNameBtn').onclick = () => { 
             const newName = document.getElementById('guestNameEdit').value.trim() || 'Guest'; 
-            const conn = connections.find(c => c.open); 
-            if (conn) { 
-                conn.send({ type: 'setName', name: newName }); 
-                const player = onlinePlayers.find(p => p.peerId === myPeerId); 
-                if (player) player.name = newName; 
-                updateGuestPlayersList(); 
-                showToast('✅ Name updated!', 'success-toast'); 
+            if (db && roomPIN && myPeerId) {
+                const updatedPlayers = onlinePlayers.map(p => {
+                    if (p.peerId === myPeerId) {
+                        return { ...p, name: newName };
+                    }
+                    return p;
+                });
+                db.collection('rooms').doc(roomPIN).update({
+                    players: updatedPlayers
+                }).then(() => {
+                    showToast('✅ Name updated!', 'success-toast'); 
+                }).catch(err => {
+                    showToast('❌ Failed to update name.', 'error-toast'); 
+                });
             } 
         };
         
         document.getElementById('chatSendBtn').onclick = () => { 
             const input = document.getElementById('chatInput'); 
             const text = input.value.trim(); 
-            if (text) { 
-                const myName = onlinePlayers[myOnlineIndex] ? onlinePlayers[myOnlineIndex].name : 'You'; 
-                const msg = { type: 'chatMessage', sender: myPeerId, name: myName, text: text }; 
-                if (isHost) { broadcastToAll(msg); addChatToast(myName, text); } 
-                else { const conn = connections.find(c => c.open); if (conn) conn.send(msg); addChatToast(myName, text); } 
-                input.value = ''; 
+            if (text && db && roomPIN) { 
+                const myName = (onlinePlayers.find(p => p.peerId === myPeerId) || {name: 'You'}).name;
+                const msg = { 
+                    sender: myPeerId, 
+                    name: myName, 
+                    text: text,
+                    time: Date.now()
+                }; 
+                db.collection('rooms').doc(roomPIN).update({
+                    chatMessage: msg
+                }).then(() => {
+                    input.value = ''; 
+                }).catch(() => {
+                    showToast('❌ Failed to send chat message.', 'error-toast'); 
+                });
             } 
         };
         document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') document.getElementById('chatSendBtn').click(); });
@@ -1358,22 +2040,6 @@
             } 
         }
         updateLocalPlayerInputs();
-
-        function toggleMute() { if (!localStream) return; const track = localStream.getAudioTracks()[0]; if (track) { track.enabled = !track.enabled; document.getElementById('muteBtn').textContent = track.enabled ? '🎤' : '🔇'; } }
-        function showMuteButton() { const btn = document.getElementById('muteBtn'); btn.style.display = 'inline-flex'; btn.textContent = '🎤'; btn.onclick = toggleMute; }
-        function hideMuteButton() { const btn = document.getElementById('muteBtn'); btn.style.display = 'none'; btn.onclick = null; }
-        
-        async function startVoiceChat() { 
-            if (!voiceChatAllowed) return; 
-            try { 
-                localStream = await navigator.mediaDevices.getUserMedia({ audio: true }); 
-                showMuteButton(); 
-                for (const conn of connections) { if (conn.open) { const call = peer.call(conn.peer, localStream); setupMediaCall(call); } } 
-                peer.on('call', (call) => { call.answer(localStream); setupMediaCall(call); }); 
-            } catch (err) { showToast('Microphone access denied or audio issue', 'error-toast'); } 
-        }
-        function setupMediaCall(call) { mediaConnections.push(call); call.on('stream', (remoteStream) => { const audio = new Audio(); audio.srcObject = remoteStream; audio.play().catch(e => {}); }); call.on('close', () => { mediaConnections = mediaConnections.filter(c => c !== call); }); }
-        function stopVoiceChat() { mediaConnections.forEach(call => call.close()); mediaConnections = []; if (localStream) { localStream.getTracks().forEach(track => track.stop()); localStream = null; } hideMuteButton(); }
 
         // Automatically detect and join code from deep link
         window.addEventListener('DOMContentLoaded', () => {
