@@ -865,6 +865,20 @@
         let onlineLastTurnIndex = null, onlineContinueOnMatch = true, onlineTurnTimeLimit = 15;
         let chatAllowed = true, showScoresOnline = true, voiceChatAllowed = false, guestNames = {}, localStream = null;
 
+        // Configuration with public Google and Twilio STUN servers to allow direct connections across different networks and NATs
+        const PEER_OPTIONS = {
+            config: {
+                iceServers: [
+                    { urls: 'stun:stun.l.google.com:19302' },
+                    { urls: 'stun:stun1.l.google.com:19302' },
+                    { urls: 'stun:stun2.l.google.com:19302' },
+                    { urls: 'stun:stun3.l.google.com:19302' },
+                    { urls: 'stun:stun4.l.google.com:19302' },
+                    { urls: 'stun:global.stun.twilio.com:3478' }
+                ]
+            }
+        };
+
         function broadcastToAll(data) { connections.forEach(c => { if (c.open) c.send(data); }); }
 
         function generateRoomCode() {
@@ -890,7 +904,7 @@
                 const code = generateRoomCode();
                 const customPeerId = 'cardmatch-' + code;
                 
-                peer = new Peer(customPeerId);
+                peer = new Peer(customPeerId, PEER_OPTIONS);
                 
                 peer.on('error', (err) => {
                     if (err.type === 'unavailable-id') {
@@ -982,7 +996,7 @@
             document.getElementById('guestWaitingStatus').innerHTML = '🟡 Connecting to host...';
             document.getElementById('guestNameEdit').value = guestName;
             
-            peer = new Peer();
+            peer = new Peer(PEER_OPTIONS);
             peer.on('open', (id) => {
                 myPeerId = id;
                 const conn = peer.connect(hostId, { reliable: true });
