@@ -1,0 +1,1442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Multiplayer Memory Card Game</title>
+    <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+    <style>
+        :root {
+            --bg: #0f0f1a;
+            --surface: rgba(20, 20, 40, 0.9);
+            --accent: #7b4fff;
+            --accent2: #c84bff;
+            --gold: #ffd700;
+            --red: #ff4b5c;
+            --text: #ffffff;
+            --text-dim: #cccccc;
+            --radius: 24px;
+            --btn-radius: 50px;
+        }
+        * { margin:0; padding:0; box-sizing:border-box; user-select:none; -webkit-tap-highlight-color:transparent; }
+        body {
+            background: radial-gradient(circle at center, #1a1a3a, var(--bg));
+            display: flex; justify-content: center; align-items: center;
+            min-height: 100vh; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            padding: 10px; color: var(--text);
+        }
+        .menu, .waiting-screen, .scanner-screen, .settings-page, .post-game-wait {
+            background: var(--surface); border-radius: var(--radius); padding: 30px 20px;
+            text-align: center; max-width: 500px; width: 100%;
+            backdrop-filter: blur(20px); border: 1px solid rgba(255,255,255,0.15);
+            box-shadow: 0 20px 40px rgba(0,0,0,0.6);
+            max-height: 90vh; overflow-y: auto;
+            margin: 5px;
+        }
+        h1 { color:var(--text); font-size:2.2em; margin-bottom:15px; text-shadow:0 0 15px rgba(255,215,0,0.4); }
+        h2 { color:var(--text); margin-bottom:12px; font-size:1.5em; }
+        button {
+            background: linear-gradient(135deg, var(--accent), var(--accent2));
+            color: white; border: none; padding: 16px 28px; margin: 8px 5px;
+            border-radius: var(--btn-radius); font-size: 16px; font-weight: 700; cursor: pointer;
+            transition: all 0.2s; width: 100%; max-width: 280px; letter-spacing: 0.5px;
+            box-shadow: 0 6px 15px rgba(123,79,255,0.3);
+        }
+        button:active { transform: scale(0.96); box-shadow: 0 4px 10px rgba(123,79,255,0.2); }
+        button.secondary { background: linear-gradient(135deg, #f093fb, #f5576c); }
+        button.back-btn {
+            background: rgba(255,255,255,0.15); margin-top: 0; padding: 10px 16px;
+            font-size: 14px; max-width: 100px; box-shadow: none;
+        }
+        button.quit-btn {
+            background: var(--red); color: white; margin: 0; padding: 10px 14px;
+            font-size: 14px; font-weight: 700; max-width: 70px; white-space: nowrap;
+            border-radius: var(--btn-radius); box-shadow: 0 4px 12px rgba(255,75,92,0.4);
+        }
+        button.icon-btn {
+            background: rgba(255,255,255,0.2); color: white; margin: 0; padding: 10px 12px;
+            font-size: 18px; max-width: 48px; border-radius: 50%; line-height: 1;
+            box-shadow: none; display: inline-flex; align-items: center; justify-content: center;
+        }
+        button.small-btn { background: rgba(255,255,255,0.15); padding: 8px 14px; font-size: 13px; max-width: 120px; }
+        .settings-row {
+            background: rgba(255,255,255,0.05); border-radius: 16px; padding: 15px;
+            margin: 15px 0; text-align: left;
+        }
+        .settings-row label { display: block; margin-bottom: 6px; font-weight: 600; color: #ccc; font-size:14px; }
+        input, select {
+            width: 100%; padding: 12px; margin: 8px 0; border: 2px solid var(--accent);
+            border-radius: 12px; background: rgba(0,0,0,0.3); color: white; font-size: 15px;
+            text-align: center; font-family: inherit; outline: none;
+        }
+        .checkbox-row { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
+        .checkbox-row input[type="checkbox"] { width: 22px; height: 22px; accent-color: var(--accent); }
+        .room-info {
+            background: rgba(0,0,0,0.4); border: 1px solid var(--gold); border-radius: 20px;
+            padding: 20px; margin: 15px 0; text-align: center;
+        }
+        .peer-id {
+            font-family: monospace; color: var(--gold); word-break: break-all;
+            background: #000; padding: 12px; border-radius: 12px; margin: 12px 0;
+            font-size: 15px; border: 1px solid var(--accent);
+            user-select: text !important; -webkit-user-select: text !important; cursor: text;
+        }
+        .qr-container { display: flex; justify-content: center; margin: 15px 0; padding: 12px; background: white; border-radius: 20px; }
+        .status { margin-top:15px; padding:12px; border-radius:12px; font-size:14px; background:rgba(0,0,0,0.5); }
+        .players-list { text-align: left; margin: 15px 0; color: var(--text-dim); }
+        .players-list div {
+            padding:8px 14px; background:rgba(255,255,255,0.06); margin:6px 0;
+            border-radius:12px; display: flex; justify-content: space-between; align-items: center;
+        }
+        .kick-btn {
+            background: transparent; border: none; color: #ff4d4d; font-size: 20px;
+            cursor: pointer; margin-left: 10px; line-height: 1; padding: 0 4px;
+        }
+        .player-name-edit { display: flex; gap: 8px; align-items: center; }
+        .player-name-edit input { width: 150px; margin: 0; padding: 8px; font-size: 14px; }
+        .player-name-edit button { width: auto; padding: 8px 14px; font-size: 13px; margin: 0; }
+
+        /* Game container */
+        .game-container {
+            display: flex; flex-direction: column; height: 100vh; max-height: 100vh;
+            padding: 0; background: rgba(0,0,0,0.8);
+            backdrop-filter: blur(10px); border-radius: 0;
+            overflow: hidden;
+            max-width: 500px;
+            width: 100%;
+            margin: 0 auto;
+        }
+        /* Tablet mode overrides */
+        .game-container.tablet-mode {
+            max-width: none;
+            width: 100vw;
+            margin: 0;
+            padding: 0;
+            border-radius: 0;
+        }
+        .tablet-mode .turn-indicator {
+            font-size: 1em; padding: 4px 10px;
+        }
+        .tablet-mode .scores {
+            font-size: 0.8em; gap: 2px; padding: 0 4px;
+        }
+        .tablet-mode .grid-container {
+            gap: 4px; max-height: 85vh;
+        }
+
+        .turn-indicator {
+            font-size:1.2em; padding:6px 12px; background:rgba(255,215,0,0.15);
+            border-radius: var(--radius); margin-bottom:4px; flex-shrink:0;
+            display: flex; justify-content: space-between; align-items: center;
+            white-space: nowrap;
+        }
+        .turn-indicator > span:first-child { overflow: hidden; text-overflow: ellipsis; max-width: 70%; }
+        .timer-display { font-size:1em; margin-left:8px; color:var(--gold); font-weight:bold; }
+        .scores {
+            display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+            margin-bottom:6px; font-weight:bold; flex-shrink:0;
+            max-height: 4em; overflow-y: auto; padding: 0 2px;
+        }
+        .score-badge {
+            background:rgba(255,255,255,0.12); padding:4px 8px; border-radius: 16px; font-size:0.8em;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+            display: flex; justify-content: center; align-items: center;
+        }
+        .score-badge.active { background:var(--gold); color:black; }
+
+        .grid-container {
+            flex:1; min-height:0; display:grid; gap:5px; margin:0 auto;
+            width:100%; max-height:80vh;
+            transition: box-shadow 0.4s;
+            border: 2px solid transparent;
+            border-radius: 16px;
+            contain: layout size;
+        }
+        .grid-container.my-turn {
+            border-color: var(--gold);
+            box-shadow: 0 0 20px rgba(255,215,0,0.5);
+            animation: turnPulse 1.5s infinite alternate;
+        }
+        @keyframes turnPulse {
+            0% { box-shadow: 0 0 15px var(--gold); }
+            100% { box-shadow: 0 0 30px var(--gold), 0 0 15px orange; }
+        }
+
+        .card {
+            background:transparent; border-radius:8px; cursor:pointer;
+            position:relative; perspective:1000px;
+            overflow: hidden;
+        }
+        .card-inner {
+            position:relative; width:100%; height:100%; transition: transform 0.5s;
+            transform-style: preserve-3d; border-radius:8px;
+        }
+        .card.flipped .card-inner { transform: rotateY(180deg); }
+        .card-front, .card-back {
+            position:absolute; top:0; left:0; width:100%; height:100%;
+            border-radius:8px; backface-visibility: hidden;
+            display:flex; align-items:center; justify-content:center;
+            font-weight:bold; box-shadow:0 4px 12px rgba(0,0,0,0.4);
+        }
+        .card-back {
+            background: linear-gradient(135deg, #2d2d44, #1a1a2e);
+            border:2px solid #5e5e7e;
+            background-image: repeating-linear-gradient(45deg, rgba(255,255,255,0.05) 0px, rgba(255,255,255,0.05) 4px, transparent 4px, transparent 12px);
+        }
+        .card-front {
+            background: #fefefe; color:#222; transform: rotateY(180deg);
+            flex-direction:column; border:2px solid #bbb; font-family:'Georgia', serif;
+        }
+        .card.matched { visibility:hidden; pointer-events:none; }
+
+        /* Effects */
+        .card.mismatch-shake .card-front { animation: shakeCard 0.5s ease; }
+        @keyframes shakeCard { 0%,100%{transform:rotateY(180deg) translateX(0)} 20%{transform:rotateY(180deg) translateX(-8px)} 40%{transform:rotateY(180deg) translateX(8px)} 60%{transform:rotateY(180deg) translateX(-6px)} 80%{transform:rotateY(180deg) translateX(6px)} }
+        .card.match-glow .card-front { border:3px solid gold; animation:blinkGlow 0.5s ease-in-out infinite alternate; }
+        @keyframes blinkGlow { 0%{box-shadow:0 0 5px gold,0 0 10px gold} 100%{box-shadow:0 0 25px gold,0 0 40px gold} }
+        .card.pick-effect .card-inner { animation:pickPop 0.3s ease; }
+        @keyframes pickPop { 0%{transform:scale(1)} 40%{transform:scale(1.05)} 100%{transform:scale(1)} }
+        .card.disappear-effect { animation:fadeAway 0.5s forwards; }
+        @keyframes fadeAway { to{opacity:0; transform:scale(0.7)} }
+
+        .corner { position:absolute; display:flex; flex-direction:column; align-items:center; line-height:1; }
+        .top-left { top:4px; left:6px; }
+        .bottom-right { bottom:4px; right:6px; transform:rotate(180deg); }
+        .val { font-size:clamp(12px, 3vw, 20px); font-weight:bold; }
+        .suit { font-size:clamp(10px, 2.5vw, 18px); }
+        .center-suit { font-size:clamp(28px, 10vw, 70px); }
+        .red { color:#c0392b; }
+        .black { color:#2c3e50; }
+
+        .toast {
+            position:fixed; bottom:100px; left:50%; transform:translateX(-50%);
+            background: linear-gradient(135deg, #ff7eb3, #ff758c);
+            color: #fff; padding: 14px 28px; border-radius: 30px;
+            font-size: 18px; font-weight: bold; z-index:200; opacity:0;
+            transition: opacity 0.3s; pointer-events:none;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.5); border: 2px solid rgba(255,255,255,0.3);
+        }
+        .toast.show { opacity:1; }
+        .toast.turn-toast { background: linear-gradient(135deg, var(--accent), var(--accent2)); }
+        .toast.error-toast { background: linear-gradient(135deg, #fc4a1a, #f7b733); }
+        .toast.success-toast { background: linear-gradient(135deg, #00b09b, #96c93d); }
+
+        .chat-toasts {
+            position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+            z-index: 250; display: flex; flex-direction: column; align-items: center;
+            gap: 10px; pointer-events: none;
+        }
+        .chat-toast {
+            background: rgba(20,20,40,0.9); backdrop-filter: blur(10px); color: #fff;
+            padding: 14px 28px; border-radius: 30px; font-size: 18px; font-weight: 500;
+            box-shadow: 0 8px 20px rgba(0,0,0,0.6); border: 2px solid var(--accent);
+            animation: chatFadeIn 0.3s ease, chatFadeOut 0.5s 4.5s forwards;
+            max-width: 400px; word-wrap: break-word;
+        }
+        .chat-toast .sender { font-weight: bold; margin-right: 8px; color:var(--gold); }
+        @keyframes chatFadeIn { from{opacity:0; transform:translateY(-15px)} to{opacity:1; transform:translateY(0)} }
+        @keyframes chatFadeOut { to{opacity:0; transform:translateY(-15px)} }
+
+        .game-over-overlay {
+            position:fixed; top:0; left:0; width:100%; height:100%;
+            background:rgba(0,0,0,0.8); display:flex; align-items:center;
+            justify-content:center; z-index:100;
+        }
+        .game-over-box {
+            background: var(--surface); border-radius: 30px; padding: 30px;
+            text-align:center; max-width:400px; width:90%;
+            backdrop-filter: blur(20px); border:1px solid rgba(255,255,255,0.2);
+        }
+        .leaderboard {
+            list-style: none; padding: 0; margin: 20px 0;
+            text-align: left; max-height: 250px; overflow-y: auto;
+        }
+        .leaderboard li {
+            padding: 12px 16px; margin: 8px 0; border-radius: 16px;
+            background: rgba(255,255,255,0.08); display: flex;
+            justify-content: space-between; font-size: 1.1em; font-weight: 500;
+        }
+        .leaderboard li.winner-row {
+            background: linear-gradient(135deg, #f6d365, #fda085);
+            color: #000; font-weight: bold; border: 2px solid var(--gold);
+        }
+        .trophy { margin-left: 10px; }
+
+        .scanner-preview {
+            width: 280px; height: 280px; margin: 0 auto;
+            border-radius: 20px; border: 2px solid var(--accent); background: #000;
+            overflow: hidden; display: flex; justify-content: center; align-items: center;
+        }
+        .scanner-preview video { width: 100%; height: 100%; object-fit: cover; }
+        #scanner-canvas { display: none; }
+
+        .bottom-row {
+            display: flex; align-items: center; gap: 6px; width: 100%;
+            margin-top: 6px; flex-shrink: 0;
+        }
+        .bottom-row #quitGameBtn { margin: 0; }
+        .bottom-row #chatArea { display:flex; flex-grow:1; gap:5px; }
+        .bottom-row input#chatInput {
+            flex-grow:1; padding: 8px 12px; border-radius: 30px;
+            border: none; background: rgba(255,255,255,0.15); color: white; font-size: 14px; outline: none;
+        }
+
+        .local-players-setup {
+            max-height: 250px; overflow-y: auto; margin-bottom: 10px;
+        }
+        .local-players-setup .player-row { display: flex; gap: 10px; margin: 5px 0; align-items: center; }
+        .local-players-setup .player-row input { flex: 1; padding: 8px; }
+    </style>
+</head>
+<body>
+    <!-- MAIN MENU -->
+    <div id="mainMenu" class="menu">
+        <h1>🃏 MEMORY GAME 🃏</h1>
+        <button id="onlineGameBtn">🌐 ONLINE MULTIPLAYER</button>
+        <button id="singlePlayerBtn" class="secondary">🎮 ONE PLAYER</button>
+        <button id="localGameBtn">👥 LOCAL MULTIPLAYER</button>
+    </div>
+
+    <!-- ONLINE MENU -->
+    <div id="onlineMenu" class="menu" style="display:none;">
+        <h1>🌐 ONLINE MODE</h1>
+        <button id="createGameBtn">🎮 CREATE GAME (Host)</button>
+        <button id="joinGameBtn" class="secondary">📲 JOIN GAME</button>
+        <button id="backFromOnline" class="back-btn">← BACK</button>
+    </div>
+
+    <!-- JOIN GAME -->
+    <div id="joinMenu" class="menu" style="display:none;">
+        <h1>📲 JOIN GAME</h1>
+        <input type="text" id="guestNameInput" placeholder="Your name" value="Guest">
+        <div class="connection-area">
+            <input type="text" id="peerIdInput" placeholder="Enter room code here">
+            <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:center;">
+                <button id="connectWithIdBtn">🔗 Join Room</button>
+                <button id="scanQrBtn">📷 Scan QR Code</button>
+            </div>
+            <div id="connectionStatus" class="status">⚡ Enter the 6-character room code</div>
+        </div>
+        <button id="backFromJoin" class="back-btn">← BACK</button>
+    </div>
+
+    <!-- SCANNER SCREEN -->
+    <div id="scannerScreen" class="scanner-screen" style="display:none;">
+        <h1>📷 SCAN QR CODE</h1>
+        <div class="room-info">
+            <div style="margin-bottom:15px; color:#fff;">Point camera at the QR code:</div>
+            <div class="scanner-preview">
+                <video id="scanner-video" autoplay playsinline></video>
+            </div>
+            <canvas id="scanner-canvas"></canvas>
+            <div id="scanner-status" style="color:#ff0; margin-top:10px; font-size:14px;">📷 Scanning...</div>
+            <button id="cancelScanBtn" class="back-btn" style="margin-top:10px;">Cancel</button>
+        </div>
+    </div>
+
+    <!-- HOST WAITING ROOM -->
+    <div id="hostWaitingRoom" class="waiting-screen" style="display:none;">
+        <h1>⏳ HOST ROOM</h1>
+        <div class="room-info">
+            <div style="font-size:18px; margin-bottom:10px; color:gold;">📲 SHARE THIS ROOM CODE</div>
+            <div class="qr-container" id="qrcode"></div>
+            <div class="peer-id" id="myPeerId"></div>
+            <button id="copyIdBtn">📋 Copy Code</button>
+        </div>
+        <div class="players-list" id="hostPlayersList"></div>
+        <button id="goToSettingsBtn">⚙️ Configure & Start</button>
+        <button id="cancelHostBtn" class="back-btn">← LEAVE</button>
+    </div>
+
+    <!-- GUEST WAITING SCREEN -->
+    <div id="guestWaitingScreen" class="waiting-screen" style="display:none;">
+        <h1>⏳ JOINED ROOM</h1>
+        <div class="status" id="guestWaitingStatus">🟡 Connecting to host...</div>
+        <div class="players-list" id="guestPlayersList"></div>
+        <div class="settings-row">
+            <label>Your name:</label>
+            <div style="display: flex; gap: 10px;">
+                <input type="text" id="guestNameEdit" placeholder="Your name" value="Guest">
+                <button id="updateNameBtn" class="small-btn">Update</button>
+            </div>
+        </div>
+        <div class="settings-row">
+            <label>Sound:</label>
+            <div class="checkbox-row">
+                <input type="checkbox" id="guestSoundToggle" checked>
+                <label style="color:white;">Enable sound</label>
+            </div>
+        </div>
+        <button id="leaveGuestBtn" class="back-btn">← LEAVE</button>
+    </div>
+
+    <!-- HOST SETTINGS PAGE (added Tablet View checkbox) -->
+    <div id="hostSettingsPage" class="settings-page" style="display:none;">
+        <h2>⚙️ GAME SETTINGS</h2>
+        <div class="settings-row">
+            <label>Your name (host):</label>
+            <input type="text" id="hostNameSetting" value="Host">
+            <label>Number of cards:</label>
+            <select id="numCardsSetting">
+                <option value="20">20 Cards (10 pairs)</option>
+                <option value="30">30 Cards (15 pairs)</option>
+                <option value="40">40 Cards (20 pairs)</option>
+                <option value="52">Full Deck (52 cards)</option>
+            </select>
+            <label>Turn timer:</label>
+            <select id="timerSetting">
+                <option value="0">No timer</option>
+                <option value="10">10 seconds</option>
+                <option value="15" selected>15 seconds</option>
+                <option value="20">20 seconds</option>
+                <option value="30">30 seconds</option>
+            </select>
+            <div class="checkbox-row">
+                <input type="checkbox" id="continueMatchSetting" checked>
+                <label style="color:white;">Continue turn on match</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="soundEnabledSetting" checked>
+                <label style="color:white;">Sound effects</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="allowChatSetting" checked>
+                <label style="color:white;">Allow text chat</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="showScoresSetting" checked>
+                <label style="color:white;">Show scores during game</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="voiceChatSetting">
+                <label style="color:white;">Allow voice chat</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="tabletModeOnline">
+                <label style="color:white;">Tablet View (landscape)</label>
+            </div>
+        </div>
+        <button id="startGameFromSettingsBtn">▶️ START GAME</button>
+        <button id="backToWaitingBtn" class="back-btn">← Back to Lobby</button>
+    </div>
+
+    <!-- POST‑GAME WAITING (guests) -->
+    <div id="postGameWaitScreen" class="post-game-wait" style="display:none;">
+        <h2>⏳ Waiting for Host</h2>
+        <p>The host is configuring the next game.</p>
+        <div class="status">Please wait...</div>
+        <button id="leavePostGameBtn" class="back-btn">← Leave</button>
+    </div>
+
+    <!-- SINGLE PLAYER SETTINGS (added Tablet View checkbox) -->
+    <div id="singlePlayerSettings" class="settings-page" style="display:none;">
+        <h2>🎮 ONE PLAYER</h2>
+        <div class="settings-row">
+            <label>Your name:</label>
+            <input type="text" id="spName" value="Player">
+            <label>Number of cards:</label>
+            <select id="spNumCards">
+                <option value="20">20 Cards (10 pairs)</option>
+                <option value="30">30 Cards (15 pairs)</option>
+                <option value="40">40 Cards (20 pairs)</option>
+                <option value="52">Full Deck (52 cards)</option>
+            </select>
+            <div class="checkbox-row">
+                <input type="checkbox" id="spSound" checked>
+                <label style="color:white;">Sound effects</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="tabletModeSingle">
+                <label style="color:white;">Tablet View (landscape)</label>
+            </div>
+        </div>
+        <button id="startSinglePlayerBtn">▶️ START</button>
+        <button id="backFromSP" class="back-btn">← BACK</button>
+    </div>
+
+    <!-- LOCAL MULTIPLAYER SETTINGS (added Tablet View checkbox) -->
+    <div id="localMultiSettings" class="settings-page" style="display:none;">
+        <h2>👥 LOCAL MULTIPLAYER</h2>
+        <div class="settings-row">
+            <label>Number of players:</label>
+            <select id="localNumPlayers">
+                <option value="2">2</option>
+                <option value="3">3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+                <option value="7">7</option>
+                <option value="8">8</option>
+            </select>
+            <div id="localPlayersContainer" class="local-players-setup"></div>
+            <label>Number of cards:</label>
+            <select id="localNumCards">
+                <option value="20">20 Cards (10 pairs)</option>
+                <option value="30">30 Cards (15 pairs)</option>
+                <option value="40">40 Cards (20 pairs)</option>
+                <option value="52">Full Deck (52 cards)</option>
+            </select>
+            <label>Turn timer:</label>
+            <select id="localTimer">
+                <option value="0">No timer</option>
+                <option value="10">10 seconds</option>
+                <option value="15" selected>15 seconds</option>
+                <option value="20">20 seconds</option>
+                <option value="30">30 seconds</option>
+            </select>
+            <div class="checkbox-row">
+                <input type="checkbox" id="localContinueMatch" checked>
+                <label style="color:white;">Continue turn on match</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="localShowScores" checked>
+                <label style="color:white;">Show scores during game</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="localSound" checked>
+                <label style="color:white;">Sound effects</label>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="tabletModeLocal">
+                <label style="color:white;">Tablet View (landscape)</label>
+            </div>
+        </div>
+        <button id="startLocalGameBtn">▶️ START</button>
+        <button id="backFromLocal" class="back-btn">← BACK</button>
+    </div>
+
+    <!-- GAME SCREEN -->
+    <div id="gameScreen" class="game-container" style="display:none;">
+        <div class="chat-toasts" id="chatToasts"></div>
+        <div class="turn-indicator" id="turnIndicator">
+            <span id="turnText"></span>
+            <span class="timer-display" id="timerDisplay"></span>
+        </div>
+        <div class="scores" id="scoresDisplay"></div>
+        <div class="grid-container" id="cardGrid"></div>
+        <div class="bottom-row" id="bottomRow">
+            <button id="quitGameBtn" class="quit-btn">Quit</button>
+            <div id="chatArea" style="display:flex; flex-grow:1; gap:5px;">
+                <input type="text" id="chatInput" placeholder="Type a message...">
+                <button id="chatSendBtn" class="icon-btn">➤</button>
+            </div>
+            <button id="muteBtn" class="icon-btn" style="display:none;">🎤</button>
+        </div>
+    </div>
+
+    <!-- TOAST -->
+    <div id="toast" class="toast"></div>
+
+    <script>
+        // ---- Full game logic with Tablet View support ----
+        const VALUE_NAMES = ['A','2','3','4','5','6','7','8','9','10','J','Q','K'];
+        const SUIT_SYMBOLS = ['♥','♦','♣','♠'];
+        const SUIT_COLORS = ['red','red','black','black'];
+
+        let gameMode = null; // 'online', 'single', 'local'
+        let currentGame = null;
+        let soundEnabled = true;
+        let tabletMode = false;   // shared tablet flag (applied per mode)
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        let audioCtx = null;
+        let gameTimers = [];
+
+        function clearAllGameTimers() { gameTimers.forEach(id => { clearTimeout(id); clearInterval(id); }); gameTimers = []; }
+
+        // ---- Sound ----
+        function playSound(type) {
+            if (!soundEnabled) return;
+            try {
+                if (!audioCtx) audioCtx = new AudioCtx();
+                const now = audioCtx.currentTime;
+                const createOsc = (freq, type, start, duration, vol = 0.2) => {
+                    const osc = audioCtx.createOscillator();
+                    const gain = audioCtx.createGain();
+                    osc.type = type;
+                    osc.frequency.setValueAtTime(freq, now + start);
+                    gain.gain.setValueAtTime(vol, now + start);
+                    gain.gain.exponentialRampToValueAtTime(0.001, now + start + duration);
+                    osc.connect(gain).connect(audioCtx.destination);
+                    osc.start(now + start);
+                    osc.stop(now + start + duration);
+                };
+                switch(type) {
+                    case 'pick': createOsc(800, 'square', 0, 0.08); break;
+                    case 'flip': createOsc(600, 'sine', 0, 0.15); setTimeout(() => createOsc(900, 'sine', 0, 0.1), 50); break;
+                    case 'match': createOsc(523, 'triangle', 0, 0.15); createOsc(659, 'triangle', 0.15, 0.15); createOsc(784, 'triangle', 0.3, 0.2); break;
+                    case 'mismatch': createOsc(200, 'sawtooth', 0, 0.2); createOsc(150, 'sawtooth', 0.1, 0.2); break;
+                    case 'disappear': createOsc(500, 'sine', 0, 0.2); createOsc(700, 'sine', 0.1, 0.15); break;
+                    case 'win': [523, 659, 784, 1047].forEach((f,i) => createOsc(f, 'triangle', i*0.15, 0.3, 0.3)); break;
+                    case 'lose': createOsc(300, 'sawtooth', 0, 0.3, 0.1); createOsc(250, 'sawtooth', 0.2, 0.3, 0.1); break;
+                    case 'tie': createOsc(400, 'square', 0, 0.15); createOsc(600, 'square', 0.15, 0.2); break;
+                    default: break;
+                }
+            } catch(e) {}
+        }
+
+        function showToast(msg, type = '') {
+            const t = document.getElementById('toast');
+            t.textContent = msg;
+            t.className = 'toast ' + type;
+            t.classList.add('show');
+            clearTimeout(t._timeout);
+            t._timeout = setTimeout(() => t.classList.remove('show'), 2500);
+        }
+
+        function addChatToast(senderName, text) {
+            const container = document.getElementById('chatToasts');
+            const toast = document.createElement('div');
+            toast.className = 'chat-toast';
+            toast.innerHTML = '<span class="sender">' + senderName + ':</span> ' + text;
+            container.appendChild(toast);
+            setTimeout(() => { if (toast.parentNode) toast.remove(); }, 5000);
+        }
+
+        // ---- Card generation ----
+        function generateCards(count) {
+            let cardDefs = [];
+            if (count === 52) {
+                for (let v = 0; v < 13; v++) for (let s = 0; s < 4; s++) cardDefs.push({ value: v, suit: s });
+            } else {
+                const pairs = count / 2;
+                const allValues = Array.from({length:13}, (_,i)=>i);
+                const shuffled = allValues.sort(()=>Math.random()-0.5);
+                for (let i = 0; i < pairs; i++) {
+                    const val = shuffled[i%13];
+                    cardDefs.push({ value: val, suit: Math.floor(Math.random()*4) });
+                    cardDefs.push({ value: val, suit: Math.floor(Math.random()*4) });
+                }
+            }
+            cardDefs = cardDefs.sort(()=>Math.random()-0.5);
+            return cardDefs.map((d,i)=>({ id:i, value:d.value, suit:d.suit, flipped:false, matched:false }));
+        }
+
+        function getCardElement(index) {
+            const grid = document.getElementById('cardGrid');
+            return grid ? grid.querySelector('.card[data-index="' + index + '"]') : null;
+        }
+
+        function applyCardEffect(index, className, duration) {
+            const cardEl = getCardElement(index);
+            if (!cardEl) return;
+            cardEl.classList.add(className);
+            if (duration > 0) setTimeout(() => cardEl.classList.remove(className), duration);
+        }
+
+        // ---- Tablet mode column logic ----
+        function getOptimalCols(total, tablet) {
+            if (!tablet) {
+                if (total === 52) return 5;
+                let cols = Math.floor(Math.sqrt(total));
+                while (total % cols !== 0 && cols > 1) cols--;
+                if (cols === 1 || total % cols !== 0) cols = Math.floor(Math.sqrt(total));
+                return cols;
+            }
+            // Tablet landscape: prefer many columns
+            if (total === 20) return 5;
+            if (total === 30) return 6;
+            if (total === 40) return 8;
+            if (total === 52) return 8;
+            // fallback: use square root
+            let cols = Math.floor(Math.sqrt(total));
+            while (total % cols !== 0 && cols > 1) cols--;
+            return cols;
+        }
+
+        // ---- Shared render grid (respects tablet mode) ----
+        function renderGrid(cards, currentTurnIdx, myIdx, showScoresFlag, players, timerStart, timerLimit, modeSpecificData) {
+            const grid = document.getElementById('cardGrid');
+            grid.innerHTML = '';
+            const total = cards.length;
+            const cols = getOptimalCols(total, tabletMode);
+            const rows = Math.ceil(total / cols);
+            grid.style.gridTemplateColumns = 'repeat(' + cols + ', 1fr)';
+            grid.style.gridTemplateRows = 'repeat(' + rows + ', 1fr)';
+
+            if (currentTurnIdx === myIdx) grid.classList.add('my-turn');
+            else grid.classList.remove('my-turn');
+
+            cards.forEach((card, idx) => {
+                const el = document.createElement('div');
+                el.className = 'card' + (card.flipped?' flipped':'') + (card.matched?' matched':'');
+                el.dataset.index = idx;
+                el.innerHTML =
+                    '<div class="card-inner"><div class="card-back"></div><div class="card-front">' +
+                    '<div class="corner top-left ' + SUIT_COLORS[card.suit] + '"><span class="val">' + VALUE_NAMES[card.value] + '</span><span class="suit">' + SUIT_SYMBOLS[card.suit] + '</span></div>' +
+                    '<div class="center-suit ' + SUIT_COLORS[card.suit] + '">' + SUIT_SYMBOLS[card.suit] + '</div>' +
+                    '<div class="corner bottom-right ' + SUIT_COLORS[card.suit] + '"><span class="val">' + VALUE_NAMES[card.value] + '</span><span class="suit">' + SUIT_SYMBOLS[card.suit] + '</span></div>' +
+                    '</div></div>';
+                el.addEventListener('click', () => currentGame.handleCardClick(idx));
+                grid.appendChild(el);
+            });
+
+            const isLocal = (modeSpecificData && modeSpecificData.local);
+            let turnHTML = '';
+            if (players.length > 0 && currentTurnIdx < players.length) {
+                turnHTML = 'Turn: <span style="color:#ffd700; font-weight:bold;">' + players[currentTurnIdx].name + '</span>';
+                if (!isLocal && currentTurnIdx === myIdx) turnHTML += ' (Your turn!)';
+            }
+            document.getElementById('turnText').innerHTML = turnHTML;
+
+            updateScoresDisplay(players, currentTurnIdx, showScoresFlag);
+
+            const timerEl = document.getElementById('timerDisplay');
+            if (timerStart && timerLimit > 0 && modeSpecificData && modeSpecificData.countdown) {
+                const remaining = Math.max(0, Math.ceil((timerLimit*1000 - (Date.now()-timerStart))/1000));
+                timerEl.innerHTML = '⏳ ' + remaining + 's';
+            } else if (timerStart && modeSpecificData && modeSpecificData.singlePlayer) {
+                const elapsed = Math.floor((Date.now() - timerStart) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                timerEl.innerHTML = '⏱ ' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0');
+            } else {
+                timerEl.innerHTML = '';
+            }
+        }
+
+        function updateScoresDisplay(players, currentTurnIdx, showScoresFlag) {
+            const scoresEl = document.getElementById('scoresDisplay');
+            if (!scoresEl) return;
+            scoresEl.innerHTML = players.map((p,i) => {
+                const cls = i === currentTurnIdx ? ' active' : '';
+                const scoreText = showScoresFlag ? ': ' + p.score : '';
+                return '<span class="score-badge' + cls + '">' + p.name + scoreText + '</span>';
+            }).join('');
+        }
+
+        // ---- Single Player Mode (with tablet support) ----
+        function startSinglePlayer() {
+            clearAllGameTimers();
+            const name = document.getElementById('spName').value.trim() || 'Player';
+            const numCards = parseInt(document.getElementById('spNumCards').value);
+            soundEnabled = document.getElementById('spSound').checked;
+            tabletMode = document.getElementById('tabletModeSingle').checked;
+            gameMode = 'single';
+            applyTabletClass(tabletMode);
+
+            const cards = generateCards(numCards);
+            const startTime = Date.now();
+            const players = [{ name: name, score: 0 }];
+            let flipped = null, lock = false, matchDelay = null, completed = false, timerInterval = null;
+
+            function render() {
+                renderGrid(cards, 0, 0, true, players, startTime, 0, { singlePlayer: true });
+                currentGame.handleCardClick = handleCardClick;
+                document.getElementById('cardGrid').querySelectorAll('.card').forEach((el, idx) => {
+                    el.addEventListener('click', () => handleCardClick(idx));
+                });
+            }
+
+            function tick() {
+                if (completed) return;
+                const elapsed = Math.floor((Date.now() - startTime) / 1000);
+                const mins = Math.floor(elapsed / 60);
+                const secs = elapsed % 60;
+                document.getElementById('timerDisplay').innerHTML = '⏱ ' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0');
+            }
+
+            timerInterval = setInterval(tick, 1000);
+            gameTimers.push(timerInterval);
+
+            function handleCardClick(idx) {
+                if (lock || cards[idx].matched || cards[idx].flipped || completed) return;
+                const cardEl = getCardElement(idx);
+                if (cardEl) cardEl.classList.add('flipped');
+                cards[idx].flipped = true;
+                playSound('pick');
+                applyCardEffect(idx, 'pick-effect', 300);
+                if (flipped === null) {
+                    flipped = idx;
+                } else {
+                    if (cards[flipped].value === cards[idx].value) {
+                        lock = true;
+                        playSound('match');
+                        applyCardEffect(flipped, 'match-glow', 1000);
+                        applyCardEffect(idx, 'match-glow', 1000);
+                        matchDelay = setTimeout(() => {
+                            cards[flipped].matched = true;
+                            cards[idx].matched = true;
+                            players[0].score++;
+                            flipped = null; lock = false;
+                            render();
+                            if (cards.every(c => c.matched)) {
+                                completed = true;
+                                clearInterval(timerInterval);
+                                gameTimers = gameTimers.filter(id => id !== timerInterval);
+                                const elapsed = Date.now() - startTime;
+                                playSound('win');
+                                const storageKey = 'memory-best-' + numCards;
+                                let bestTimes = JSON.parse(localStorage.getItem(storageKey) || '[]');
+                                bestTimes.push({ name, time: elapsed, date: new Date().toISOString() });
+                                bestTimes.sort((a,b) => a.time - b.time);
+                                bestTimes = bestTimes.slice(0, 5);
+                                localStorage.setItem(storageKey, JSON.stringify(bestTimes));
+                                let lbHtml = '<ul class="leaderboard"><li style="font-weight:bold;">🏆 Best Times</li>';
+                                bestTimes.forEach((entry, i) => {
+                                    const mins = Math.floor(entry.time / 60000);
+                                    const secs = Math.floor((entry.time % 60000) / 1000);
+                                    lbHtml += '<li><span>' + (i+1) + '. ' + entry.name + '</span> <span>' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0') + '</span></li>';
+                                });
+                                lbHtml += '</ul>';
+                                const overlay = document.createElement('div');
+                                overlay.id = 'gameOverOverlay'; overlay.className = 'game-over-overlay';
+                                const mins = Math.floor(elapsed / 60000);
+                                const secs = Math.floor((elapsed % 60000) / 1000);
+                                overlay.innerHTML = '<div class="game-over-box"><h2>🏁 Game Over!</h2><p style="font-size:1.5em;">Your time: <b>' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0') + '</b></p>' + lbHtml + '<button id="quitOverlayBtn" class="back-btn">← Back to Menu</button></div>';
+                                document.body.appendChild(overlay);
+                                document.getElementById('quitOverlayBtn').onclick = () => { overlay.remove(); resetToMainMenu(); };
+                            }
+                        }, 1000);
+                        gameTimers.push(matchDelay);
+                    } else {
+                        lock = true;
+                        playSound('mismatch');
+                        applyCardEffect(flipped, 'mismatch-shake', 500);
+                        applyCardEffect(idx, 'mismatch-shake', 500);
+                        setTimeout(() => {
+                            const c1 = getCardElement(flipped), c2 = getCardElement(idx);
+                            if (c1) c1.classList.remove('flipped');
+                            if (c2) c2.classList.remove('flipped');
+                            cards[flipped].flipped = false;
+                            cards[idx].flipped = false;
+                            flipped = null; lock = false;
+                            document.getElementById('turnText').innerHTML = 'Turn: <span style="color:#ffd700;">' + players[0].name + '</span> (Your turn!)';
+                        }, 1200);
+                    }
+                }
+            }
+
+            currentGame = { handleCardClick };
+            hideAllScreens();
+            document.getElementById('gameScreen').style.display = 'flex';
+            document.getElementById('chatArea').style.display = 'none';
+            document.getElementById('muteBtn').style.display = 'none';
+            render();
+        }
+
+        // ---- Local Multiplayer Mode (with tablet support) ----
+        function startLocalMultiplayer() {
+            clearAllGameTimers();
+            const numPlayers = parseInt(document.getElementById('localNumPlayers').value);
+            const numCards = parseInt(document.getElementById('localNumCards').value);
+            const turnTimeLimit = parseInt(document.getElementById('localTimer').value);
+            const continueOnMatch = document.getElementById('localContinueMatch').checked;
+            const showScores = document.getElementById('localShowScores').checked;
+            soundEnabled = document.getElementById('localSound').checked;
+            tabletMode = document.getElementById('tabletModeLocal').checked;
+            gameMode = 'local';
+            applyTabletClass(tabletMode);
+
+            const cards = generateCards(numCards);
+            const players = [];
+            for (let i = 0; i < numPlayers; i++) {
+                const nameInput = document.getElementById('localPlayerName' + i);
+                const name = nameInput ? (nameInput.value.trim() || 'Player ' + (i+1)) : 'Player ' + (i+1);
+                players.push({ name, score: 0 });
+            }
+            let currentTurn = 0, flipped = null, lock = false, matchDelay = null;
+            let turnTimerStart = null, turnTimerHandle = null, gameOver = false;
+
+            function announceTurn() { showToast(players[currentTurn].name + "'s turn", 'turn-toast'); }
+            function updateTurnDisplay() {
+                document.getElementById('turnText').innerHTML = 'Turn: <span style="color:#ffd700; font-weight:bold;">' + players[currentTurn].name + '</span>';
+                updateScoresDisplay(players, currentTurn, showScores);
+            }
+            function startTurnTimer() {
+                clearTurnTimer(); stopLocalTimerLoop();
+                if (turnTimeLimit <= 0 || lock || gameOver) return;
+                turnTimerStart = Date.now();
+                startLocalTimerLoop(turnTimeLimit, turnTimerStart);
+                turnTimerHandle = setTimeout(() => {
+                    if (lock || gameOver) return;
+                    if (flipped !== null) {
+                        const cardEl = getCardElement(flipped);
+                        if (cardEl) cardEl.classList.remove('flipped');
+                        cards[flipped].flipped = false;
+                        flipped = null;
+                    }
+                    currentTurn = (currentTurn + 1) % players.length;
+                    updateTurnDisplay(); announceTurn();
+                    startTurnTimer();
+                }, turnTimeLimit * 1000);
+                gameTimers.push(turnTimerHandle);
+            }
+            function clearTurnTimer() {
+                if (turnTimerHandle) { clearTimeout(turnTimerHandle); gameTimers = gameTimers.filter(id => id !== turnTimerHandle); turnTimerHandle = null; }
+                turnTimerStart = null; stopLocalTimerLoop();
+            }
+            function render() {
+                renderGrid(cards, currentTurn, currentTurn, showScores, players, turnTimerStart, turnTimeLimit, { countdown: true, local: true });
+                currentGame.handleCardClick = handleCardClick;
+                document.getElementById('cardGrid').querySelectorAll('.card').forEach((el, idx) => {
+                    el.addEventListener('click', () => handleCardClick(idx));
+                });
+                if (turnTimeLimit > 0 && !lock && !gameOver && turnTimerStart) startLocalTimerLoop(turnTimeLimit, turnTimerStart);
+            }
+
+            function handleCardClick(idx) {
+                if (lock || cards[idx].matched || cards[idx].flipped || gameOver) return;
+                const cardEl = getCardElement(idx);
+                if (cardEl) cardEl.classList.add('flipped');
+                cards[idx].flipped = true;
+                playSound('pick'); applyCardEffect(idx, 'pick-effect', 300);
+                if (flipped === null) {
+                    flipped = idx; startTurnTimer();
+                } else {
+                    if (cards[flipped].value === cards[idx].value) {
+                        lock = true; clearTurnTimer();
+                        playSound('match');
+                        applyCardEffect(flipped, 'match-glow', 1000);
+                        applyCardEffect(idx, 'match-glow', 1000);
+                        matchDelay = setTimeout(() => {
+                            cards[flipped].matched = true;
+                            cards[idx].matched = true;
+                            players[currentTurn].score++;
+                            flipped = null; lock = false;
+                            if (!continueOnMatch) currentTurn = (currentTurn + 1) % players.length;
+                            render(); announceTurn(); startTurnTimer();
+                            if (cards.every(c => c.matched)) {
+                                gameOver = true; clearTurnTimer();
+                                const maxScore = Math.max.apply(null, players.map(p => p.score));
+                                const winners = players.filter(p => p.score === maxScore).map((p, i) => ({ peerId: 'local' + i, name: p.name, score: p.score }));
+                                const isTie = winners.length > 1;
+                                playSound(isTie ? 'tie' : 'win');
+                                showGameOver(players, winners, isTie, false);
+                            }
+                        }, 1000);
+                        gameTimers.push(matchDelay);
+                    } else {
+                        lock = true; clearTurnTimer();
+                        playSound('mismatch');
+                        applyCardEffect(flipped, 'mismatch-shake', 500);
+                        applyCardEffect(idx, 'mismatch-shake', 500);
+                        setTimeout(() => {
+                            const c1 = getCardElement(flipped), c2 = getCardElement(idx);
+                            if (c1) c1.classList.remove('flipped');
+                            if (c2) c2.classList.remove('flipped');
+                            cards[flipped].flipped = false;
+                            cards[idx].flipped = false;
+                            flipped = null;
+                            currentTurn = (currentTurn + 1) % players.length;
+                            lock = false;
+                            updateTurnDisplay(); announceTurn();
+                            startTurnTimer();
+                        }, 1200);
+                    }
+                }
+            }
+
+            currentGame = { handleCardClick };
+            hideAllScreens();
+            document.getElementById('gameScreen').style.display = 'flex';
+            document.getElementById('chatArea').style.display = 'none';
+            document.getElementById('muteBtn').style.display = 'none';
+            render(); announceTurn(); startTurnTimer();
+        }
+
+        function showGameOver(players, winners, isTie, isSinglePlayer, singleTime, cardCount) {
+            const old = document.getElementById('gameOverOverlay'); if (old) old.remove();
+            const overlay = document.createElement('div');
+            overlay.id = 'gameOverOverlay'; overlay.className = 'game-over-overlay';
+            let title = '🏁 Game Over!', message = '';
+            if (isSinglePlayer) {
+                const mins = Math.floor(singleTime / 60000), secs = Math.floor((singleTime % 60000) / 1000);
+                message = '<p style="font-size:1.5em;">Your time: <b>' + String(mins).padStart(2,'0') + ':' + String(secs).padStart(2,'0') + '</b></p>';
+            } else if (isTie) {
+                title = "🤝 It's a Tie!";
+                message = '<p style="font-size:1.5em; color:gold; margin:10px 0;">Multiple players share the lead!</p>';
+            } else if (winners.length > 0) {
+                message = '<p style="font-size:1.3em;">Winner: <b>' + winners[0].name + '</b></p>';
+            }
+            let lb = '';
+            if (!isSinglePlayer) {
+                lb = '<ul class="leaderboard">';
+                players.forEach(p => {
+                    const win = winners.some(w => w.peerId === p.peerId);
+                    lb += '<li class="' + (win ? 'winner-row' : '') + '"><span>' + p.name + (win ? ' 🏆' : '') + '</span> <span>' + p.score + ' pairs</span></li>';
+                });
+                lb += '</ul>';
+            }
+            overlay.innerHTML = '<div class="game-over-box" style="border: ' + ((!isSinglePlayer && (isTie || winners.some(w => w.peerId === myPeerId))) ? '3px solid gold' : '1px solid rgba(255,255,255,0.2)') + ';">' +
+                '<h2>' + title + '</h2>' + message + lb +
+                '<button id="quitOverlayBtn" class="back-btn">← Back to Menu</button></div>';
+            document.body.appendChild(overlay);
+            document.getElementById('quitOverlayBtn').onclick = () => { overlay.remove(); resetToMainMenu(); };
+        }
+
+        // ---- Online Multiplayer (Firebase) ----
+        const FIREBASE_DB_URL = 'https://mcards-h-default-rtdb.firebaseio.com';
+        let peer = null, connections = [], mediaConnections = [], myPeerId = null, isHost = false;
+        let onlinePlayers = [], myOnlineIndex = -1, onlineCards = [], onlineCurrentTurn = 0, onlineTurnLock = false;
+        let onlineFirstFlipped = null, onlineMatchDelay = null, onlineTurnTimerHandle = null, onlineTurnTimerStart = null;
+        let onlineLastTurnIndex = null, onlineContinueOnMatch = true, onlineTurnTimeLimit = 15;
+        let chatAllowed = true, showScoresOnline = true, voiceChatAllowed = false, guestNames = {}, localStream = null;
+        let firebaseRoomCode = '', firebaseRoomWatcherStop = null, firebaseRoomActive = false;
+        let firebaseRoomRole = null;
+        let firebaseRoomTimer = null;
+        let firebaseRoomLastState = null;
+
+        function generateRoomCode() {
+            const chars = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+            let code = '';
+            for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+            return code;
+        }
+
+        function getFallbackRoomKey(code) {
+            return `memory-room-${(code || '').toUpperCase()}`;
+        }
+
+        function readFallbackRoom(code) {
+            try {
+                const raw = localStorage.getItem(getFallbackRoomKey(code));
+                return raw ? JSON.parse(raw) : null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+        function writeFallbackRoom(code, room) {
+            try {
+                localStorage.setItem(getFallbackRoomKey(code), JSON.stringify(room));
+            } catch (e) {}
+            return room;
+        }
+
+        async function firebaseRequest(method, path, body) {
+            const roomCode = (path.match(/\/rooms\/([^/]+)/) || [])[1];
+            const url = `${FIREBASE_DB_URL.replace(/\/$/, '')}${path}.json`;
+            const options = { method, headers: { 'Content-Type': 'application/json' } };
+            if (body !== undefined) options.body = JSON.stringify(body);
+            try {
+                const response = await fetch(url, options);
+                if (!response.ok) throw new Error(`Firebase ${method} failed: ${response.status}`);
+                return response.json();
+            } catch (err) {
+                if (roomCode) {
+                    if (method === 'GET') return readFallbackRoom(roomCode);
+                    return writeFallbackRoom(roomCode, body);
+                }
+                throw err;
+            }
+        }
+
+        async function firebaseCreateRoom(roomCode, hostName) {
+            const initialState = {
+                status: 'waiting',
+                hostName: hostName || 'Host',
+                guestName: '',
+                players: [{ id: 'host', peerId: `room:${roomCode}:host`, score: 0, name: hostName || 'Host' }],
+                settings: {},
+                gameState: null,
+                updatedAt: Date.now()
+            };
+            await firebaseRequest('PUT', `/rooms/${roomCode}`, initialState);
+            return initialState;
+        }
+
+        async function firebaseJoinRoom(roomCode, guestName) {
+            const room = await firebaseRequest('GET', `/rooms/${roomCode}`);
+            if (!room || !room.hostName) throw new Error('Room not found');
+            const updatedRoom = {
+                ...room,
+                guestName: guestName || 'Guest',
+                players: [
+                    ...(Array.isArray(room.players) ? room.players : []),
+                    { id: 'guest', peerId: `room:${roomCode}:guest`, score: 0, name: guestName || 'Guest' }
+                ],
+                status: 'waiting',
+                updatedAt: Date.now()
+            };
+            await firebaseRequest('PUT', `/rooms/${roomCode}`, updatedRoom);
+            return updatedRoom;
+        }
+
+        async function firebaseWriteRoom(roomCode, room) {
+            if (!roomCode) return null;
+            const payload = { ...(room || {}), updatedAt: Date.now() };
+            await firebaseRequest('PUT', `/rooms/${roomCode}`, payload);
+            return payload;
+        }
+
+        function stopFirebaseRoomWatcher() {
+            if (firebaseRoomWatcherStop) {
+                firebaseRoomWatcherStop();
+                firebaseRoomWatcherStop = null;
+            }
+            if (firebaseRoomTimer) {
+                clearTimeout(firebaseRoomTimer);
+                firebaseRoomTimer = null;
+            }
+            firebaseRoomActive = false;
+        }
+
+        function startFirebaseRoomWatcher(roomCode) {
+            stopFirebaseRoomWatcher();
+            firebaseRoomCode = roomCode;
+            firebaseRoomActive = true;
+            let stopped = false;
+            const poll = () => {
+                if (stopped || !firebaseRoomActive || !roomCode) return;
+                firebaseRequest('GET', `/rooms/${roomCode}`).then(room => {
+                    if (stopped || !room) return;
+                    firebaseRoomLastState = room;
+                    applyFirebaseRoomState(room);
+                    if (!stopped) firebaseRoomTimer = setTimeout(poll, 1500);
+                }).catch(() => {
+                    if (!stopped) firebaseRoomTimer = setTimeout(poll, 2000);
+                });
+            };
+            poll();
+            firebaseRoomWatcherStop = () => { stopped = true; firebaseRoomActive = false; if (firebaseRoomTimer) clearTimeout(firebaseRoomTimer); firebaseRoomTimer = null; };
+        }
+
+        function applyFirebaseRoomState(room) {
+            if (!room) return;
+            if (Array.isArray(room.players)) {
+                onlinePlayers = room.players.map(p => ({
+                    peerId: p.peerId || p.id || 'player',
+                    score: p.score || 0,
+                    name: p.name || 'Player'
+                }));
+            }
+            if (room.hostName && !onlinePlayers.length) {
+                onlinePlayers = [{ peerId: 'room:' + firebaseRoomCode + ':host', score: 0, name: room.hostName }];
+            }
+            if (room.guestName && !onlinePlayers.some(p => p.name === room.guestName) && room.guestName !== room.hostName) {
+                onlinePlayers.push({ peerId: 'room:' + firebaseRoomCode + ':guest', score: 0, name: room.guestName });
+            }
+            updateHostPlayersList();
+            updateGuestPlayersList();
+            if (room.gameState && room.gameState.started) {
+                const gs = room.gameState;
+                onlineCards = gs.cards || [];
+                onlineCurrentTurn = gs.currentTurnIndex ?? 0;
+                onlineTurnTimeLimit = gs.turnTimeLimit ?? onlineTurnTimeLimit;
+                onlineContinueOnMatch = gs.continueOnMatch ?? onlineContinueOnMatch;
+                showScoresOnline = gs.showScores ?? showScoresOnline;
+                voiceChatAllowed = gs.voiceChatAllowed ?? voiceChatAllowed;
+                tabletMode = gs.tabletMode ?? tabletMode;
+                onlineTurnLock = gs.turnLock ?? false;
+                onlineFirstFlipped = gs.firstFlipped ?? null;
+                onlineTurnTimerStart = gs.turnTimerStart ?? null;
+                onlinePlayers = (gs.players || onlinePlayers).map(p => ({ peerId: p.peerId || p.id || 'player', score: p.score || 0, name: p.name || 'Player' }));
+                myOnlineIndex = onlinePlayers.findIndex(p => p.peerId === myPeerId);
+                gameMode = 'online';
+                hideAllScreens();
+                document.getElementById('gameScreen').style.display = 'flex';
+                document.getElementById('chatArea').style.display = chatAllowed ? 'flex' : 'none';
+                document.getElementById('muteBtn').style.display = voiceChatAllowed ? 'inline-flex' : 'none';
+                applyTabletClass(tabletMode);
+                renderOnlineGame();
+            } else if (room.status === 'waiting') {
+                if (firebaseRoomRole === 'host') {
+                    document.getElementById('hostWaitingRoom').style.display = 'block';
+                    document.getElementById('onlineMenu').style.display = 'none';
+                } else if (firebaseRoomRole === 'guest') {
+                    document.getElementById('guestWaitingScreen').style.display = 'block';
+                    document.getElementById('joinMenu').style.display = 'none';
+                    document.getElementById('guestWaitingStatus').innerHTML = '🟡 Waiting for host to start...';
+                }
+            }
+        }
+
+        function buildFirebaseRoomPayload() {
+            return {
+                status: 'playing',
+                hostName: onlinePlayers.find(p => p.peerId === myPeerId)?.name || 'Host',
+                guestName: onlinePlayers.find(p => p.peerId !== myPeerId)?.name || 'Guest',
+                players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })),
+                settings: { numCards: onlineCards.length, turnTimeLimit: onlineTurnTimeLimit, continueOnMatch: onlineContinueOnMatch },
+                gameState: {
+                    started: true,
+                    cards: onlineCards,
+                    currentTurnIndex: onlineCurrentTurn,
+                    turnTimeLimit: onlineTurnTimeLimit,
+                    continueOnMatch: onlineContinueOnMatch,
+                    players: onlinePlayers.map(p => ({ peerId: p.peerId, score: p.score, name: p.name })),
+                    showScores: showScoresOnline,
+                    chatAllowed: chatAllowed,
+                    voiceChatAllowed: voiceChatAllowed,
+                    tabletMode: tabletMode,
+                    turnLock: onlineTurnLock,
+                    firstFlipped: onlineFirstFlipped,
+                    turnTimerStart: onlineTurnTimerStart,
+                    gameOver: false
+                },
+                updatedAt: Date.now()
+            };
+        }
+
+        async function pushFirebaseRoomState() {
+            if (!firebaseRoomCode) return;
+            const room = firebaseRoomLastState || {};
+            const payload = { ...room, ...buildFirebaseRoomPayload() };
+            firebaseRoomLastState = await firebaseWriteRoom(firebaseRoomCode, payload);
+        }
+
+        function createRoom() {
+            isHost = true;
+            firebaseRoomRole = 'host';
+            document.getElementById('onlineMenu').style.display = 'none';
+            document.getElementById('hostWaitingRoom').style.display = 'block';
+            onlinePlayers = []; guestNames = {};
+            document.getElementById('myPeerId').innerHTML = 'Creating room...';
+            document.getElementById('hostPlayersList').innerHTML = '';
+            const roomCode = generateRoomCode();
+            const hostName = document.getElementById('hostNameSetting').value.trim() || 'Host';
+            myPeerId = `room:${roomCode}:host`;
+            onlinePlayers.push({ peerId: myPeerId, score: 0, name: hostName });
+            updateHostPlayersList();
+            const qrContainer = document.getElementById('qrcode'); qrContainer.innerHTML = '';
+            new QRCode(qrContainer, { text: roomCode, width: 200, height: 200 });
+            document.getElementById('myPeerId').innerHTML = roomCode;
+            document.getElementById('copyIdBtn').onclick = () => {
+                const copyText = () => navigator.clipboard ? navigator.clipboard.writeText(roomCode) : Promise.reject();
+                copyText().then(() => { showToast('📋 Copied!', 'success-toast'); document.getElementById('copyIdBtn').innerHTML = '✅ Copied!'; setTimeout(() => document.getElementById('copyIdBtn').innerHTML = '📋 Copy ID', 2000); }).catch(() => showToast('❌ Copy failed.', 'error-toast'));
+            };
+            firebaseCreateRoom(roomCode, hostName).then(() => {
+                startFirebaseRoomWatcher(roomCode);
+                document.getElementById('guestWaitingStatus').innerHTML = '🟡 Waiting for guest...';
+            }).catch(() => {
+                alert('Failed to create room.');
+                resetToMainMenu();
+            });
+        }
+
+        function joinGame(roomCode) {
+            const guestName = document.getElementById('guestNameInput').value.trim() || 'Guest';
+            if (!roomCode) return;
+            isHost = false;
+            firebaseRoomRole = 'guest';
+            document.getElementById('joinMenu').style.display = 'none';
+            document.getElementById('guestWaitingScreen').style.display = 'block';
+            document.getElementById('guestWaitingStatus').innerHTML = '🟡 Connecting to room...';
+            document.getElementById('guestNameEdit').value = guestName;
+            myPeerId = `room:${roomCode.toUpperCase()}:guest`;
+            firebaseJoinRoom(roomCode.toUpperCase(), guestName).then(() => {
+                startFirebaseRoomWatcher(roomCode.toUpperCase());
+            }).catch(() => {
+                document.getElementById('guestWaitingStatus').innerHTML = '❌ Room not found.';
+                setTimeout(() => resetToMainMenu(), 2000);
+            });
+        }
+
+        function handleOnlineData(conn, data) {
+            if (data.type === 'welcome') { onlinePlayers = data.players; updateGuestPlayersList(); }
+            else if (data.type === 'playersUpdate') { onlinePlayers = data.players; updateGuestPlayersList(); }
+            else if (data.type === 'initGame') {
+                onlineCards = data.cards; onlineCurrentTurn = data.currentTurnIndex; onlineTurnTimeLimit = data.turnTimeLimit; onlineContinueOnMatch = data.continueOnMatch; onlinePlayers = data.players;
+                chatAllowed = data.chatAllowed !== undefined ? data.chatAllowed : true; showScoresOnline = data.showScores !== undefined ? data.showScores : true;
+                voiceChatAllowed = data.voiceChatAllowed !== undefined ? data.voiceChatAllowed : false;
+                tabletMode = data.tabletMode !== undefined ? data.tabletMode : false;
+                applyTabletClass(tabletMode);
+                myOnlineIndex = onlinePlayers.findIndex(p => p.peerId === myPeerId);
+                gameMode = 'online';
+                hideAllScreens(); document.getElementById('gameScreen').style.display = 'flex';
+                document.getElementById('chatArea').style.display = chatAllowed ? 'flex' : 'none'; document.getElementById('muteBtn').style.display = voiceChatAllowed ? 'inline-flex' : 'none';
+                clearOnlineTimers(); onlineLastTurnIndex = onlineCurrentTurn; renderOnlineGame();
+            } else if (data.type === 'updateState') {
+                onlineCards = data.cards; onlineCurrentTurn = data.currentTurnIndex; onlinePlayers = data.players;
+                onlineTurnTimerStart = data.timerStart || null; showScoresOnline = data.showScores !== undefined ? data.showScores : showScoresOnline;
+                renderOnlineGame(); if (onlineTurnTimeLimit > 0) startOnlineClientTimer();
+            } else if (data.type === 'gameOver') {
+                const isTie = data.isTie || false; const winners = data.winners || []; const allPlayers = data.players || onlinePlayers;
+                showGameOverOverlayOnline(isTie, winners, allPlayers); stopVoiceChat();
+            } else if (data.type === 'backToLobby') { gameMode = null; hideAllScreens(); document.getElementById('postGameWaitScreen').style.display = 'block'; clearOnlineTimers(); stopVoiceChat(); }
+            else if (data.type === 'effect') { if (data.action && data.index !== undefined) { const effectMap = { pick:'pick-effect', matchGlow:'match-glow', mismatchShake:'mismatch-shake', disappear:'disappear-effect' }; if (effectMap[data.action]) applyCardEffect(data.index, effectMap[data.action], data.action === 'matchGlow' ? 1000 : 500); playSound(data.action); } }
+            else if (data.type === 'chatMessage') { if (data.sender !== myPeerId) addChatToast(data.name, data.text); }
+            else if (data.type === 'playerLeft') { onlinePlayers = data.players; showToast(data.name + ' left the game', 'error-toast'); myOnlineIndex = onlinePlayers.findIndex(p => p.peerId === myPeerId); renderOnlineGame(); }
+            else if (data.type === 'hostLeft') { alert('Host left the game.'); resetToMainMenu(); }
+        }
+
+        function handleOnlineFlip(peerId, cardIndex) {
+            if (!onlineCards.length || onlineTurnLock) return;
+            const idx = onlinePlayers.findIndex(p => p.peerId === peerId);
+            if (idx !== onlineCurrentTurn) return;
+            const card = onlineCards[cardIndex];
+            if (!card || card.matched || card.flipped) return;
+            card.flipped = true; clearOnlineTurnTimer();
+            applyCardEffect(cardIndex, 'pick-effect', 300); playSound('pick');
+            if (onlineFirstFlipped === null) { onlineFirstFlipped = cardIndex; onlineTurnTimerStart = Date.now(); pushFirebaseRoomState(); startOnlineTurnTimer(); }
+            else {
+                const firstCard = onlineCards[onlineFirstFlipped];
+                if (firstCard.value === card.value) {
+                    onlineTurnLock = true; applyCardEffect(onlineFirstFlipped, 'match-glow', 1000); applyCardEffect(cardIndex, 'match-glow', 1000); playSound('match');
+                    onlineMatchDelay = setTimeout(() => {
+                        firstCard.matched = true; card.matched = true; onlinePlayers[onlineCurrentTurn].score++;
+                        onlineFirstFlipped = null; if (!onlineContinueOnMatch) onlineCurrentTurn = (onlineCurrentTurn + 1) % onlinePlayers.length;
+                        onlineTurnLock = false; pushFirebaseRoomState(); startOnlineTurnTimer(); if (onlineCards.every(c => c.matched)) endOnlineGame();
+                    }, 1000); gameTimers.push(onlineMatchDelay);
+                } else {
+                    onlineTurnLock = true; applyCardEffect(onlineFirstFlipped, 'mismatch-shake', 500); applyCardEffect(cardIndex, 'mismatch-shake', 500); playSound('mismatch');
+                    const mismatchTimeout = setTimeout(() => {
+                        firstCard.flipped = false; card.flipped = false; onlineFirstFlipped = null;
+                        onlineCurrentTurn = (onlineCurrentTurn + 1) % onlinePlayers.length;
+                        onlineTurnLock = false; pushFirebaseRoomState(); startOnlineTurnTimer();
+                    }, 1200); gameTimers.push(mismatchTimeout);
+                }
+            }
+        }
+
+        function broadcastOnlineState() { renderOnlineGame(); pushFirebaseRoomState(); }
+        function endOnlineGame() { const maxScore = Math.max.apply(null, onlinePlayers.map(p => p.score)); const winners = onlinePlayers.filter(p => p.score === maxScore).map(w => ({ peerId: w.peerId, name: w.name, score: w.score })); const isTie = winners.length > 1; clearOnlineTimers(); showGameOverOverlayOnline(isTie, winners, onlinePlayers); playSound(isTie ? 'tie' : (winners[0].peerId === myPeerId ? 'win' : 'lose')); stopVoiceChat(); pushFirebaseRoomState(); }
+        function startOnlineTurnTimer() { clearOnlineTurnTimer(); if (!onlineCards.length || onlineTurnTimeLimit <= 0 || onlineTurnLock) return; onlineTurnTimerStart = Date.now(); onlineTurnTimerHandle = setTimeout(() => { if (onlineTurnLock) return; if (onlineFirstFlipped !== null) { onlineCards[onlineFirstFlipped].flipped = false; onlineFirstFlipped = null; } onlineCurrentTurn = (onlineCurrentTurn + 1) % onlinePlayers.length; broadcastOnlineState(); startOnlineTurnTimer(); }, onlineTurnTimeLimit * 1000); gameTimers.push(onlineTurnTimerHandle); broadcastOnlineState(); }
+        function clearOnlineTurnTimer() { if (onlineTurnTimerHandle) { clearTimeout(onlineTurnTimerHandle); gameTimers = gameTimers.filter(id => id !== onlineTurnTimerHandle); onlineTurnTimerHandle = null; } onlineTurnTimerStart = null; }
+        function clearOnlineMatchDelay() { if (onlineMatchDelay) { clearTimeout(onlineMatchDelay); gameTimers = gameTimers.filter(id => id !== onlineMatchDelay); onlineMatchDelay = null; } }
+        function clearOnlineTimers() { clearOnlineTurnTimer(); clearOnlineMatchDelay(); }
+        function startOnlineClientTimer() { const el = document.getElementById('timerDisplay'); if (!onlineTurnTimerStart || onlineTurnTimeLimit <= 0) { el.innerHTML = ''; return; } const update = () => { if (!onlineTurnTimerStart) { el.innerHTML = ''; return; } const remaining = Math.max(0, Math.ceil((onlineTurnTimeLimit*1000 - (Date.now()-onlineTurnTimerStart))/1000)); el.innerHTML = '⏳ ' + remaining + 's'; if (remaining > 0 && gameMode === 'online') requestAnimationFrame(update); else el.innerHTML = ''; }; update(); }
+        function renderOnlineGame() { currentGame = { handleCardClick: (idx) => { if (!onlineCards.length || onlineTurnLock) return; if (onlineCurrentTurn !== myOnlineIndex) { showToast("⛔ Not your turn!", 'error-toast'); return; } if (onlineCards[idx].matched || onlineCards[idx].flipped) return; handleOnlineFlip(myPeerId, idx); }, myPlayerIndex: myOnlineIndex }; renderGrid(onlineCards, onlineCurrentTurn, myOnlineIndex, showScoresOnline, onlinePlayers, onlineTurnTimerStart, onlineTurnTimeLimit, { countdown: true }); if (onlineTurnTimeLimit > 0) startOnlineClientTimer(); }
+        function showGameOverOverlayOnline(isTie, winners, allPlayers) {
+            const old = document.getElementById('gameOverOverlay'); if (old) old.remove();
+            const overlay = document.createElement('div'); overlay.id = 'gameOverOverlay'; overlay.className = 'game-over-overlay';
+            const iAmWinner = winners.some(w => w.peerId === myPeerId);
+            let lb = '<ul class="leaderboard">';
+            allPlayers.forEach(p => { const win = winners.some(w => w.peerId === p.peerId); lb += '<li class="' + (win ? 'winner-row' : '') + '"><span>' + p.name + (win?' 🏆':'') + '</span> <span>' + p.score + ' pairs</span></li>'; });
+            lb += '</ul>';
+            overlay.innerHTML = '<div class="game-over-box" style="border: ' + (isTie || iAmWinner ? '3px solid gold' : '1px solid rgba(255,255,255,0.2)') + ';">' +
+                '<h2>' + (isTie ? "🤝 It's a Tie!" : "🏁 Game Over!") + '</h2>' +
+                (isTie ? '<p style="font-size:1.5em; color:gold;">Multiple players share the lead!</p>' : (iAmWinner ? '<p style="font-size:1.8em; color:gold;">🏆 YOU WIN! 🏆</p>' : '<p style="font-size:1.3em;">Winner: <b>' + winners[0].name + '</b></p>')) +
+                lb + (isHost ? '<button id="backToSettingsBtn">⚙️ New Game</button>' : '<p style="margin:15px 0;">Waiting for host...</p>') +
+                '<button id="quitOverlayBtn" class="back-btn">← Quit</button></div>';
+            document.body.appendChild(overlay);
+            document.getElementById('quitOverlayBtn').onclick = () => { overlay.remove(); resetToMainMenu(); };
+            if (isHost) document.getElementById('backToSettingsBtn').onclick = () => { overlay.remove(); hideAllScreens(); document.getElementById('hostSettingsPage').style.display = 'block'; gameMode = 'online'; onlineCards = []; clearOnlineTimers(); pushFirebaseRoomState(); };
+        }
+
+        function updateHostPlayersList() { const list = document.getElementById('hostPlayersList'); list.innerHTML = '<strong>Players:</strong>'; onlinePlayers.forEach((p, i) => { const isMe = p.peerId === myPeerId; const kickBtn = (!isMe && gameMode !== 'online' && !onlineCards.length) ? '<button class="kick-btn" data-peerid="' + p.peerId + '">✕</button>' : ''; list.innerHTML += '<div>👤 ' + p.name + (isMe ? ' (You)' : '') + ' ' + kickBtn + '</div>'; }); }
+        function updateGuestPlayersList() { const list = document.getElementById('guestPlayersList'); list.innerHTML = '<strong>Players:</strong>'; onlinePlayers.forEach(p => { const isMe = p.peerId === myPeerId; list.innerHTML += '<div>👤 ' + p.name + (isMe ? ' (You)' : '') + '</div>'; }); }
+
+        function startOnlineGame() {
+            const hostName = document.getElementById('hostNameSetting').value.trim() || 'Host';
+            const players = [{ peerId: myPeerId, score: 0, name: hostName }];
+            if (onlinePlayers.length > 1) {
+                onlinePlayers.forEach(p => { if (p.peerId !== myPeerId) players.push({ peerId: p.peerId, score: 0, name: p.name }); });
+            }
+            if (players.length < 2) { alert('Need at least 2 players!'); return; }
+            onlinePlayers = players;
+            const numCards = parseInt(document.getElementById('numCardsSetting').value);
+            onlineTurnTimeLimit = parseInt(document.getElementById('timerSetting').value);
+            onlineContinueOnMatch = document.getElementById('continueMatchSetting').checked;
+            soundEnabled = document.getElementById('soundEnabledSetting').checked;
+            chatAllowed = document.getElementById('allowChatSetting').checked;
+            showScoresOnline = document.getElementById('showScoresSetting').checked;
+            voiceChatAllowed = document.getElementById('voiceChatSetting').checked;
+            tabletMode = document.getElementById('tabletModeOnline').checked;
+            applyTabletClass(tabletMode);
+            onlineCards = generateCards(numCards);
+            onlineCurrentTurn = 0; onlineFirstFlipped = null; onlineTurnLock = false; clearOnlineTimers();
+            onlinePlayers.forEach(p => p.score = 0);
+            myOnlineIndex = 0; onlineLastTurnIndex = 0;
+            hideAllScreens(); document.getElementById('gameScreen').style.display = 'flex';
+            document.getElementById('chatArea').style.display = chatAllowed ? 'flex' : 'none';
+            document.getElementById('muteBtn').style.display = voiceChatAllowed ? 'inline-flex' : 'none';
+            gameMode = 'online';
+            renderOnlineGame(); startOnlineTurnTimer();
+            pushFirebaseRoomState();
+        }
+
+        // ---- Tablet class helper ----
+        function applyTabletClass(isTablet) {
+            const gc = document.getElementById('gameScreen');
+            if (gc) {
+                if (isTablet) gc.classList.add('tablet-mode');
+                else gc.classList.remove('tablet-mode');
+            }
+        }
+
+        // ---- Quit ----
+        function quitToSettings() {
+            if (!confirm('Are you sure you want to leave the game?')) return;
+            if (gameMode === 'online') {
+                if (isHost) { clearOnlineTimers(); stopVoiceChat(); stopFirebaseRoomWatcher(); onlinePlayers = []; myOnlineIndex = -1; onlineCards = []; guestNames = {}; hideAllScreens(); document.getElementById('hostSettingsPage').style.display = 'block'; }
+                else { clearOnlineTimers(); stopVoiceChat(); stopFirebaseRoomWatcher(); onlinePlayers = []; myOnlineIndex = -1; onlineCards = []; hideAllScreens(); document.getElementById('guestWaitingScreen').style.display = 'block'; }
+            } else if (gameMode === 'single') { hideAllScreens(); document.getElementById('singlePlayerSettings').style.display = 'block'; }
+            else if (gameMode === 'local') { hideAllScreens(); document.getElementById('localMultiSettings').style.display = 'block'; }
+            currentGame = null; gameMode = null;
+            applyTabletClass(false);
+        }
+
+        function resetToMainMenu() {
+            clearAllGameTimers();
+            if (gameMode === 'online') { clearOnlineTimers(); stopVoiceChat(); stopScanner(); stopFirebaseRoomWatcher(); onlinePlayers = []; myOnlineIndex = -1; onlineCards = []; guestNames = {}; }
+            currentGame = null; gameMode = null;
+            applyTabletClass(false);
+            hideAllScreens(); document.getElementById('mainMenu').style.display = 'block';
+        }
+
+        let scannerStream = null, scannerAnim = null;
+        async function startScanner() {
+            await stopScanner();
+            document.getElementById('joinMenu').style.display = 'none'; document.getElementById('scannerScreen').style.display = 'block';
+            const video = document.getElementById('scanner-video'), canvasEl = document.getElementById('scanner-canvas'), ctx = canvasEl.getContext('2d'), status = document.getElementById('scanner-status');
+            status.textContent = '📷 Starting camera...';
+            try {
+                scannerStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width:{ideal:640}, height:{ideal:480} } });
+                video.srcObject = scannerStream; video.setAttribute('playsinline',''); video.play();
+                status.textContent = '📷 Scanning... Point at QR code';
+                await new Promise(r => video.onloadedmetadata = () => { canvasEl.width = video.videoWidth; canvasEl.height = video.videoHeight; r(); });
+                let found = false;
+                function scan() { if (!scannerStream || found) return; if (video.readyState === video.HAVE_ENOUGH_DATA) { ctx.drawImage(video,0,0,canvasEl.width,canvasEl.height); const imgData = ctx.getImageData(0,0,canvasEl.width,canvasEl.height); const code = jsQR(imgData.data, imgData.width, imgData.height, { inversionAttempts:"dontInvert" }); if (code) { found = true; status.textContent = '✅ QR Code found!'; stopScanner(); document.getElementById('scannerScreen').style.display = 'none'; document.getElementById('joinMenu').style.display = 'block'; document.getElementById('peerIdInput').value = code.data; joinGame(code.data); } } scannerAnim = requestAnimationFrame(scan); }
+                scan();
+            } catch (e) { status.textContent = 'Camera error: ' + (e.message||e); }
+        }
+        async function stopScanner() { if (scannerAnim) { cancelAnimationFrame(scannerAnim); scannerAnim = null; } if (scannerStream) { scannerStream.getTracks().forEach(t=>t.stop()); scannerStream = null; } const video = document.getElementById('scanner-video'); if (video) video.srcObject = null; }
+
+        function hideAllScreens() {
+            const ids = ['mainMenu','onlineMenu','joinMenu','scannerScreen','hostWaitingRoom','guestWaitingScreen','hostSettingsPage','postGameWaitScreen','gameScreen','singlePlayerSettings','localMultiSettings'];
+            ids.forEach(id => { const el = document.getElementById(id); if (el) el.style.display = 'none'; });
+            const ov = document.getElementById('gameOverOverlay'); if (ov) ov.remove();
+        }
+
+        // Local timer loop
+        let localTimerLoopId = null;
+        function startLocalTimerLoop(turnTimeLimit, turnTimerStart) {
+            const el = document.getElementById('timerDisplay');
+            function update() { if (!turnTimerStart || !el) return; const remaining = Math.max(0, Math.ceil((turnTimeLimit*1000 - (Date.now()-turnTimerStart))/1000)); el.innerHTML = '⏳ ' + remaining + 's'; if (remaining > 0 && gameMode === 'local') localTimerLoopId = requestAnimationFrame(update); else el.innerHTML = ''; }
+            cancelAnimationFrame(localTimerLoopId); update();
+        }
+        function stopLocalTimerLoop() { cancelAnimationFrame(localTimerLoopId); localTimerLoopId = null; document.getElementById('timerDisplay').innerHTML = ''; }
+
+        // Event listeners
+        document.getElementById('onlineGameBtn').onclick = () => { document.getElementById('mainMenu').style.display='none'; document.getElementById('onlineMenu').style.display='block'; };
+        document.getElementById('backFromOnline').onclick = resetToMainMenu;
+        document.getElementById('createGameBtn').onclick = createRoom;
+        document.getElementById('joinGameBtn').onclick = () => { document.getElementById('onlineMenu').style.display='none'; document.getElementById('joinMenu').style.display='block'; };
+        document.getElementById('backFromJoin').onclick = () => { document.getElementById('joinMenu').style.display='none'; document.getElementById('onlineMenu').style.display='block'; };
+        document.getElementById('connectWithIdBtn').onclick = () => { const id = document.getElementById('peerIdInput').value.trim(); if (id) joinGame(id); };
+        document.getElementById('scanQrBtn').onclick = startScanner;
+        document.getElementById('cancelScanBtn').onclick = () => { stopScanner(); document.getElementById('scannerScreen').style.display='none'; document.getElementById('joinMenu').style.display='block'; };
+        document.getElementById('goToSettingsBtn').onclick = () => { document.getElementById('hostWaitingRoom').style.display='none'; document.getElementById('hostSettingsPage').style.display='block'; };
+        document.getElementById('backToWaitingBtn').onclick = () => { document.getElementById('hostSettingsPage').style.display='none'; document.getElementById('hostWaitingRoom').style.display='block'; };
+        document.getElementById('startGameFromSettingsBtn').onclick = startOnlineGame;
+        document.getElementById('cancelHostBtn').onclick = resetToMainMenu;
+        document.getElementById('leaveGuestBtn').onclick = resetToMainMenu;
+        document.getElementById('quitGameBtn').onclick = quitToSettings;
+        document.getElementById('leavePostGameBtn').onclick = resetToMainMenu;
+        document.getElementById('soundEnabledSetting').addEventListener('change', e => { soundEnabled = e.target.checked; });
+        document.getElementById('guestSoundToggle').addEventListener('change', e => { soundEnabled = e.target.checked; });
+        document.getElementById('updateNameBtn').onclick = () => { const newName = document.getElementById('guestNameEdit').value.trim() || 'Guest'; const player = onlinePlayers.find(p => p.peerId === myPeerId); if (player) { player.name = newName; updateGuestPlayersList(); updateHostPlayersList(); showToast('✅ Name updated!', 'success-toast'); if (firebaseRoomCode) pushFirebaseRoomState(); } };
+        document.getElementById('chatSendBtn').onclick = () => { const input = document.getElementById('chatInput'); const text = input.value.trim(); if (text) { const myName = onlinePlayers.find(p => p.peerId === myPeerId)?.name || 'You'; addChatToast(myName, text); input.value = ''; if (firebaseRoomCode) { const room = firebaseRoomLastState || {}; room.chat = room.chat || []; room.chat.push({ name: myName, text: text, time: Date.now() }); firebaseRoomLastState = room; firebaseWriteRoom(firebaseRoomCode, room).catch(()=>{}); } } };
+        document.getElementById('chatInput').addEventListener('keypress', e => { if (e.key === 'Enter') document.getElementById('chatSendBtn').click(); });
+        document.getElementById('singlePlayerBtn').onclick = () => { document.getElementById('mainMenu').style.display='none'; document.getElementById('singlePlayerSettings').style.display='block'; };
+        document.getElementById('backFromSP').onclick = resetToMainMenu;
+        document.getElementById('startSinglePlayerBtn').onclick = startSinglePlayer;
+        document.getElementById('localGameBtn').onclick = () => { document.getElementById('mainMenu').style.display='none'; document.getElementById('localMultiSettings').style.display='block'; updateLocalPlayerInputs(); };
+        document.getElementById('backFromLocal').onclick = resetToMainMenu;
+        document.getElementById('startLocalGameBtn').onclick = startLocalMultiplayer;
+        document.getElementById('localNumPlayers').addEventListener('change', updateLocalPlayerInputs);
+        function updateLocalPlayerInputs() { const count = parseInt(document.getElementById('localNumPlayers').value); const container = document.getElementById('localPlayersContainer'); container.innerHTML = ''; for (let i = 0; i < count; i++) { const div = document.createElement('div'); div.className = 'player-row'; div.innerHTML = '<label>Player ' + (i+1) + ':</label><input type="text" id="localPlayerName' + i + '" placeholder="Name" value="Player ' + (i+1) + '">'; container.appendChild(div); } }
+        updateLocalPlayerInputs();
+
+        function toggleMute() { if (!localStream) return; const track = localStream.getAudioTracks()[0]; if (track) { track.enabled = !track.enabled; document.getElementById('muteBtn').textContent = track.enabled ? '🎤' : '🔇'; } }
+        function showMuteButton() { const btn = document.getElementById('muteBtn'); btn.style.display = 'inline-flex'; btn.textContent = '🎤'; btn.onclick = toggleMute; }
+        function hideMuteButton() { const btn = document.getElementById('muteBtn'); btn.style.display = 'none'; btn.onclick = null; }
+        async function startVoiceChat() { if (!voiceChatAllowed) return; try { localStream = await navigator.mediaDevices.getUserMedia({ audio: true }); showMuteButton(); for (const conn of connections) { if (conn.open) { const call = peer.call(conn.peer, localStream); setupMediaCall(call); } } peer.on('call', (call) => { call.answer(localStream); setupMediaCall(call); }); } catch (err) { showToast('Microphone access denied or error', 'error-toast'); } }
+        function setupMediaCall(call) { mediaConnections.push(call); call.on('stream', (remoteStream) => { const audio = new Audio(); audio.srcObject = remoteStream; audio.play().catch(e => {}); }); call.on('close', () => { mediaConnections = mediaConnections.filter(c => c !== call); }); }
+        function stopVoiceChat() { mediaConnections.forEach(call => call.close()); mediaConnections = []; if (localStream) { localStream.getTracks().forEach(track => track.stop()); localStream = null; } hideMuteButton(); }
+    </script>
+</body>
+</html>
